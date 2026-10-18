@@ -28,6 +28,7 @@ class Settings:
     openwa_api_key: str = ""
     openwa_session_id: str = ""
     openwa_status_recipients: tuple[str, ...] = ()
+    openwa_status_use_contacts: bool = False
 
     @property
     def openwa_configured(self) -> bool:
@@ -92,4 +93,7 @@ def load_settings(
         openwa_api_key=openwa["OPENWA_API_KEY"],
         openwa_session_id=openwa["OPENWA_SESSION_ID"],
         openwa_status_recipients=recipients,
+        openwa_status_use_contacts=_env_bool(
+            env.get("OPENWA_STATUS_USE_CONTACTS")
+        ),
     )

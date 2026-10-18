@@ -37,16 +37,22 @@ RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (
 | `OPENWA_BASE_URL` | non | — | URL de la passerelle OpenWA (ex. `http://openwa:2785`) |
 | `OPENWA_API_KEY` | non | — | clé API OpenWA (rôle *operator* requis) |
 | `OPENWA_SESSION_ID` | non | — | UUID de la session WhatsApp connectée |
-| `OPENWA_STATUS_RECIPIENTS` | non | — | JIDs destinataires du statut, séparés par des virgules (`123@c.us`) |
+| `OPENWA_STATUS_RECIPIENTS` | non | — | JIDs destinataires manuels, séparés par des virgules (`123@c.us`) |
+| `OPENWA_STATUS_USE_CONTACTS` | non | `0` | `1` = ajoute les contacts synchronisés comme destinataires du statut |
 
 Le statut WhatsApp n'est publié que si les trois variables `OPENWA_*`
 (`BASE_URL`, `API_KEY`, `SESSION_ID`) sont définies. Une configuration partielle
 lève une erreur au démarrage.
 
-Avec l'engine **Baileys**, `OPENWA_STATUS_RECIPIENTS` est obligatoire : OpenWA
-publie le statut uniquement pour cette liste. Avec **whatsapp-web.js**, laisse-le
-vide : le statut est diffusé à l'audience définie par les réglages de
-confidentialité du compte.
+Les destinataires du statut sont la concaténation de `OPENWA_STATUS_RECIPIENTS`
+(manuel) et, si `OPENWA_STATUS_USE_CONTACTS=1`, des contacts du carnet d'adresses
+mis en cache par `--sync-contacts` (hors contacts bloqués). Les doublons sont
+retirés et la liste est plafonnée à **256 JIDs**, la limite d'OpenWA.
+
+Avec l'engine **Baileys**, au moins une source de destinataires est obligatoire :
+OpenWA publie le statut uniquement pour cette liste. Avec **whatsapp-web.js**,
+laisse les deux vides : le statut est diffusé à l'audience définie par les
+réglages de confidentialité du compte.
 
 Copie `.env.example` vers un fichier d'environnement de ton choix.
 
@@ -59,6 +65,7 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 export DEEPSEEK_API_KEY=sk-...
 python -m bot --dry-run       # image écrite dans data/out/, aucune publication
 python -m bot --poll-updates  # relève les /start et /stop, puis quitte
+python -m bot --sync-contacts # met en cache les contacts WhatsApp, puis quitte
 python -m bot                 # publication réelle à tous les abonnés
 ```
 
@@ -104,6 +111,31 @@ X-API-Key: {OPENWA_API_KEY}
  "recipients": ["123@c.us"]}
 ```
 
+### Précharger les contacts (`--sync-contacts`)
+
+Plutôt que de maintenir `OPENWA_STATUS_RECIPIENTS` à la main, le bot peut mettre
+en cache le carnet d'adresses OpenWA :
+
+```bash
+OPENWA_STATUS_USE_CONTACTS=1 python -m bot --sync-contacts
+```
+
+- `GET /api/sessions/{id}/contacts` est paginé (1000 contacts par page) et les
+  JIDs invalides (groupes, ids vides) sont ignorés.
+- Seuls les JIDs `@c.us` / `@lid`, non bloqués et présents dans le carnet
+  d'adresses (`isMyContact`) sont utilisés comme destinataires.
+- Le snapshot remplace le précédent dans la table SQLite `whatsapp_contacts` :
+  un contact supprimé côté WhatsApp disparaît au sync suivant.
+- Aucun appel OpenWA supplémentaire n'est fait à la publication : le statut lit
+  le cache local.
+- Le statut accepte au maximum 256 destinataires ; le cache peut en contenir plus,
+  les 256 premiers (carnet d'adresses, ordre alphabétique) sont envoyés.
+- Si le cache est vide, un avertissement est loggé et, sur Baileys, le statut
+  échouera faute de destinataires.
+
+Ajoute `OPENWA_STATUS_USE_CONTACTS=1` à l'environnement du bot pour activer
+l'utilisation du cache lors des publications.
+
 - La session WhatsApp doit être **connectée** (`ready`) ; sinon OpenWA répond
   `409` et le statut est simplement ignoré (le canal Telegram reste publié).
 - Le statut est indépendant de Telegram : sans aucun abonné Telegram, le meme est
@@ -130,7 +162,9 @@ X-API-Key: {OPENWA_API_KEY}
    puis Host Path `/opt/memes-bot/data` et Mount Path `/data`.
 5. Onglet **Schedule Jobs** :
    - `*/5 * * * *` → `python -m bot --poll-updates` (inscriptions réactives) ;
-   - `5 * * * *` → `python -m bot --once` (publication horaire).
+   - `5 * * * *` → `python -m bot --once` (publication horaire) ;
+   - `0 */6 * * *` → `python -m bot --sync-contacts` (cache des contacts WhatsApp,
+     uniquement si `OPENWA_STATUS_USE_CONTACTS=1`).
 6. Vérifie les logs du premier run en `DRY_RUN=1`, puis passe `DRY_RUN=0`.
 
 Le conteneur ne travaille pas de lui-même : son `CMD` est `sleep infinity` pour

@@ -19,6 +19,11 @@ class OpenWAConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "OPENWA_API_KEY, OPENWA_SESSION_ID"):
             _load(OPENWA_BASE_URL="http://localhost:2785")
 
+    def test_parses_use_contacts(self) -> None:
+        self.assertFalse(_load().openwa_status_use_contacts)
+        settings = _load(OPENWA_STATUS_USE_CONTACTS="true")
+        self.assertTrue(settings.openwa_status_use_contacts)
+
     def test_parses_recipients_and_trims_base_url(self) -> None:
         settings = _load(
             OPENWA_BASE_URL="http://localhost:2785/",

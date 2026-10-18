@@ -23,6 +23,7 @@ from .templates import Template, fetch_templates, select_templates
 logger = logging.getLogger(__name__)
 
 STATUS_TARGET = "whatsapp-status"
+MAX_STATUS_RECIPIENTS = 256
 
 NewsFetcher = Callable[[], list[NewsItem]]
 TemplateFetcher = Callable[[], list[Template]]
@@ -32,6 +33,7 @@ Publisher = Callable[[str, bytes, str], dict]
 StatusPublisher = Callable[[bytes, str], dict]
 UpdateFetcher = Callable[[int | None], list[dict]]
 Notifier = Callable[[str, str], object]
+ContactFetcher = Callable[[], list[dict]]
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,18 @@ def _recipients(settings: Settings, store: Store) -> tuple[str, ...]:
     if settings.telegram_chat_id:
         targets.append(settings.telegram_chat_id)
     return tuple(dict.fromkeys(targets))
+
+
+def _status_recipients(settings: Settings, store: Store) -> tuple[str, ...]:
+    targets = list(settings.openwa_status_recipients)
+    if settings.openwa_status_use_contacts:
+        stored = store.whatsapp_contacts(limit=MAX_STATUS_RECIPIENTS)
+        if not stored:
+            logger.warning(
+                "Aucun contact WhatsApp en cache : lance `python -m bot --sync-contacts`"
+            )
+        targets.extend(stored)
+    return tuple(dict.fromkeys(targets))[:MAX_STATUS_RECIPIENTS]
 
 
 def _is_blocked(exc: Exception) -> bool:
@@ -116,7 +130,7 @@ def run_once(
                         settings.openwa_base_url,
                         settings.openwa_api_key,
                         settings.openwa_session_id,
-                        settings.openwa_status_recipients,
+                        _status_recipients(settings, store),
                     ).send_image_status
                 if not recipients and status_sender is None:
                     return RunResult("nothing", "aucun abonné")
@@ -248,6 +262,44 @@ def run_once(
                 )
 
             return RunResult("nothing", "toutes les actualités ont déjà été traitées")
+        finally:
+            if owns_store:
+                store.close()
+
+
+def sync_contacts(
+    settings: Settings,
+    *,
+    store: Store | None = None,
+    contact_fetcher: ContactFetcher | None = None,
+) -> RunResult:
+    """Cache the OpenWA address book for use as WhatsApp status recipients."""
+    if not settings.openwa_configured:
+        raise ConfigError(
+            "Configuration OpenWA requise pour synchroniser les contacts"
+        )
+
+    owns_store = store is None
+    with httpx.Client(
+        timeout=settings.request_timeout,
+        headers={"User-Agent": "memegen-news-bot/0.1"},
+    ) as client:
+        store = store or Store(settings.data_dir / "bot.db")
+        try:
+            openwa = OpenWAClient(
+                client,
+                settings.openwa_base_url,
+                settings.openwa_api_key,
+                settings.openwa_session_id,
+            )
+            contacts = (contact_fetcher or openwa.list_contacts)()
+            count = store.replace_whatsapp_contacts(contacts)
+            usable = store.whatsapp_contacts(limit=MAX_STATUS_RECIPIENTS)
+            return RunResult(
+                "synced",
+                f"{count} contact(s) WhatsApp, "
+                f"{len(usable)} destinataire(s) de statut",
+            )
         finally:
             if owns_store:
                 store.close()

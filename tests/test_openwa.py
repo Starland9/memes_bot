@@ -67,6 +67,34 @@ class OpenWAClientTest(unittest.TestCase):
             with self.assertRaisesRegex(OpenWAError, "409.*session not ready"):
                 api.send_image_status(b"png-bytes", "Légende")
 
+    def test_pages_through_all_contacts(self) -> None:
+        pages = {
+            "0": [
+                {"id": "111@c.us", "name": "Ada", "isMyContact": True},
+                {"id": "222@c.us", "name": "Zoé", "isMyContact": True},
+            ],
+            "2": [{"id": "333@lid", "name": "Linus", "isMyContact": True}],
+        }
+        seen_offsets: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/sessions/session-1/contacts")
+            self.assertEqual(request.headers["X-API-Key"], "secret")
+            offset = request.url.params["offset"]
+            seen_offsets.append(offset)
+            return httpx.Response(200, json=pages.get(offset, []))
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            contacts = api.list_contacts(page_size=2)
+
+        self.assertEqual([contact["id"] for contact in contacts], [
+            "111@c.us",
+            "222@c.us",
+            "333@lid",
+        ])
+        self.assertEqual(seen_offsets, ["0", "2"])
+
     def test_quotes_session_id_in_path(self) -> None:
         captured: dict = {}
 

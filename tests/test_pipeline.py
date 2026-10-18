@@ -6,7 +6,7 @@ from pathlib import Path
 from bot.config import load_settings
 from bot.llm import MemePlan
 from bot.news import NewsItem
-from bot.pipeline import poll_updates, run_once, url_hash
+from bot.pipeline import poll_updates, run_once, sync_contacts, url_hash
 from bot.store import Store
 from bot.telegram import TelegramError
 from bot.templates import Template
@@ -237,6 +237,84 @@ class PipelineTest(unittest.TestCase):
                 ("http://127.0.0.1:2785", "secret", "session-1", ("123@c.us",)),
             )
             self.assertEqual(calls["sent"], (b"image", "Légende"))
+            store.close()
+
+    def test_status_recipients_come_from_cached_contacts(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_STATUS_RECIPIENTS": "999@c.us",
+                    "OPENWA_STATUS_USE_CONTACTS": "1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            store.replace_whatsapp_contacts(
+                [
+                    {"id": "111@c.us", "isMyContact": True},
+                    {"id": "222@c.us", "isMyContact": True, "isBlocked": True},
+                    {"id": "333@c.us", "isMyContact": False},
+                ]
+            )
+            calls: dict = {}
+
+            class FakeClient:
+                def __init__(self, client, base_url, api_key, session_id, recipients):
+                    calls["recipients"] = recipients
+
+                def send_image_status(self, image: bytes, caption: str) -> dict:
+                    return {"id": "STATUS1"}
+
+            with patch("bot.pipeline.OpenWAClient", FakeClient):
+                result = run_once(
+                    settings,
+                    store=store,
+                    update_fetcher=lambda offset: [],
+                    news_fetcher=lambda: [SAFE_ITEM],
+                    template_fetcher=lambda: TEMPLATES,
+                    generator=lambda item, templates, recent: MemePlan(
+                        "drake", ("Avant", "Après"), "Légende"
+                    ),
+                    image_fetcher=lambda url: b"image",
+                    publisher=lambda *args: self.fail("aucun destinataire Telegram"),
+                )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(calls["recipients"], ("999@c.us", "111@c.us"))
+            store.close()
+
+    def test_sync_contacts_stores_the_address_book(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+
+            result = sync_contacts(
+                settings,
+                store=store,
+                contact_fetcher=lambda: [
+                    {"id": "111@c.us", "name": "Ada", "isMyContact": True},
+                    {"id": "222@lid", "name": "Zoé", "isMyContact": True},
+                ],
+            )
+
+            self.assertEqual(result.status, "synced")
+            self.assertIn("2 contact", result.detail)
+            self.assertEqual(store.whatsapp_contacts(), ("111@c.us", "222@lid"))
             store.close()
 
     def test_whatsapp_status_failure_keeps_telegram_delivery(self) -> None:

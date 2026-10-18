@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 MAX_CAPTION_LENGTH = 1024
+MAX_CONTACTS = 100_000
+CONTACTS_PAGE_SIZE = 1000
 
 
 class OpenWAError(RuntimeError):
@@ -29,9 +32,55 @@ class OpenWAClient:
         self._session_id = session_id
         self._recipients = recipients
 
-    def _url(self) -> str:
+    def _session_url(self, suffix: str) -> str:
         session = quote(self._session_id, safe="")
-        return f"{self._base_url}/api/sessions/{session}/status/send-image"
+        return f"{self._base_url}/api/sessions/{session}/{suffix}"
+
+    def _decode(self, response: httpx.Response) -> Any:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+        if response.is_success:
+            return body
+
+        message = response.text[:200]
+        if isinstance(body, dict):
+            message = body.get("message") or body.get("error") or message
+        raise OpenWAError(f"HTTP {response.status_code} : {message}")
+
+    def list_contacts(self, page_size: int = CONTACTS_PAGE_SIZE) -> list[dict]:
+        """Fetch every contact of the session, paging through the gateway."""
+        contacts: list[dict] = []
+        seen: set[str] = set()
+        offset = 0
+        while offset < MAX_CONTACTS:
+            response = self._client.get(
+                self._session_url("contacts"),
+                params={"limit": page_size, "offset": offset},
+                headers={"X-API-Key": self._api_key},
+            )
+            body = self._decode(response)
+            if not isinstance(body, list):
+                raise OpenWAError("réponse inattendue de la liste des contacts")
+
+            added = 0
+            for contact in body:
+                if not isinstance(contact, dict):
+                    continue
+                contact_id = contact.get("id")
+                if isinstance(contact_id, str) and contact_id:
+                    if contact_id in seen:
+                        continue
+                    seen.add(contact_id)
+                contacts.append(contact)
+                added += 1
+
+            if len(body) < page_size or added == 0:
+                break
+            offset += len(body)
+        return contacts
 
     def send_image_status(self, image: bytes, caption: str) -> dict:
         payload: dict[str, object] = {
@@ -46,19 +95,9 @@ class OpenWAClient:
             payload["recipients"] = list(self._recipients)
 
         response = self._client.post(
-            self._url(),
+            self._session_url("status/send-image"),
             json=payload,
             headers={"X-API-Key": self._api_key},
         )
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-
-        if response.is_success:
-            return body if isinstance(body, dict) else {}
-
-        message = response.text[:200]
-        if isinstance(body, dict):
-            message = body.get("message") or body.get("error") or message
-        raise OpenWAError(f"HTTP {response.status_code} : {message}")
+        body = self._decode(response)
+        return body if isinstance(body, dict) else {}

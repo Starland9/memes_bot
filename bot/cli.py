@@ -6,7 +6,7 @@ import argparse
 import logging
 
 from .config import ConfigError, load_settings
-from .pipeline import poll_updates, run_once
+from .pipeline import poll_updates, run_once, sync_contacts
 
 logger = logging.getLogger("bot")
 
@@ -29,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="relève les /start et /stop des abonnés puis quitte",
     )
+    parser.add_argument(
+        "--sync-contacts",
+        action="store_true",
+        help="met en cache les contacts WhatsApp via OpenWA puis quitte",
+    )
     parser.add_argument("--log-level", default="INFO", help="niveau de log (défaut : INFO)")
     args = parser.parse_args(argv)
 
@@ -42,6 +47,18 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         logger.error("%s", exc)
         return 2
+
+    if args.sync_contacts:
+        try:
+            result = sync_contacts(settings)
+        except ConfigError as exc:
+            logger.error("%s", exc)
+            return 2
+        except Exception:
+            logger.exception("Échec de la synchronisation des contacts")
+            return 2
+        logger.info("%s : %s", result.status, result.detail)
+        return 0
 
     if args.poll_updates:
         try:

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+
+CONTACT_ID_RE = re.compile(r"^\d+@(c\.us|lid)$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS posts (
@@ -42,11 +46,28 @@ CREATE TABLE IF NOT EXISTS state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+    contact_id    TEXT PRIMARY KEY,
+    number        TEXT,
+    name          TEXT,
+    push_name     TEXT,
+    is_my_contact INTEGER NOT NULL DEFAULT 0,
+    is_blocked    INTEGER NOT NULL DEFAULT 0,
+    synced_at     TEXT NOT NULL
+);
 """
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 class Store:
@@ -142,6 +163,54 @@ class Store:
         rows = self._conn.execute(
             "SELECT chat_id FROM subscribers ORDER BY subscribed_at"
         ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def replace_whatsapp_contacts(
+        self, contacts: Iterable[Mapping[str, object]]
+    ) -> int:
+        """Replace the cached OpenWA address book with a fresh snapshot."""
+        rows: dict[str, tuple] = {}
+        synced_at = _now()
+        for contact in contacts:
+            contact_id = str(contact.get("id") or "").strip()
+            if not CONTACT_ID_RE.fullmatch(contact_id):
+                continue
+            rows[contact_id] = (
+                contact_id,
+                _optional_text(contact.get("number")),
+                _optional_text(contact.get("name")),
+                _optional_text(contact.get("pushName")),
+                1 if contact.get("isMyContact") else 0,
+                1 if contact.get("isBlocked") else 0,
+                synced_at,
+            )
+
+        with self._conn:
+            self._conn.execute("DELETE FROM whatsapp_contacts")
+            self._conn.executemany(
+                """
+                INSERT INTO whatsapp_contacts
+                    (contact_id, number, name, push_name, is_my_contact,
+                     is_blocked, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows.values(),
+            )
+        return len(rows)
+
+    def whatsapp_contacts(
+        self, limit: int = 256, *, saved_only: bool = True
+    ) -> tuple[str, ...]:
+        """Cached JIDs usable as WhatsApp status recipients."""
+        query = "SELECT contact_id FROM whatsapp_contacts WHERE is_blocked = 0"
+        if saved_only:
+            query += " AND is_my_contact = 1"
+        query += (
+            " ORDER BY is_my_contact DESC,"
+            " COALESCE(name, push_name, contact_id) COLLATE NOCASE, contact_id"
+            " LIMIT ?"
+        )
+        rows = self._conn.execute(query, (limit,)).fetchall()
         return tuple(row[0] for row in rows)
 
     def get_offset(self) -> int | None:
