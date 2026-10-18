@@ -1,3 +1,3 @@
-"""Memegen news bot: fetch news, generate a meme with DeepSeek, broadcast it to Telegram."""
+"""Memegen news bot: news -> meme via DeepSeek/memegen -> Telegram and WhatsApp status."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

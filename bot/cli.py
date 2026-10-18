@@ -13,7 +13,10 @@ logger = logging.getLogger("bot")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Génère un meme à partir de l'actualité et le publie sur Telegram."
+        description=(
+            "Génère un meme à partir de l'actualité et le publie sur Telegram "
+            "(et en statut WhatsApp si OpenWA est configuré)."
+        )
     )
     parser.add_argument("--once", action="store_true", help="exécute un seul cycle (défaut)")
     parser.add_argument(
@@ -50,7 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if settings.dry_run:
-        logger.info("Mode dry-run : aucune publication Telegram")
+        logger.info(
+            "Mode dry-run : aucune publication Telegram ni statut WhatsApp"
+        )
 
     try:
         result = run_once(settings)

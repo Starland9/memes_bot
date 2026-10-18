@@ -27,16 +27,21 @@ TEMPLATES = [Template("drake", "Drakeposting", 2)]
 
 
 class PipelineTest(unittest.TestCase):
-    def _settings(self, tmp: str, dry_run: bool = True, chat_id: str = "42"):
-        return load_settings(
-            env={
-                "DEEPSEEK_API_KEY": "key",
-                "TELEGRAM_BOT_TOKEN": "token",
-                "TELEGRAM_CHAT_ID": chat_id,
-                "DATA_DIR": tmp,
-            },
-            dry_run=dry_run,
-        )
+    def _settings(
+        self,
+        tmp: str,
+        dry_run: bool = True,
+        chat_id: str = "42",
+        env_extra: dict[str, str] | None = None,
+    ):
+        env = {
+            "DEEPSEEK_API_KEY": "key",
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_CHAT_ID": chat_id,
+            "DATA_DIR": tmp,
+        }
+        env.update(env_extra or {})
+        return load_settings(env=env, dry_run=dry_run)
 
     def test_dry_run_writes_image_then_dedupes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,6 +60,9 @@ class PipelineTest(unittest.TestCase):
                 generator=generator,
                 image_fetcher=lambda url: b"\x89PNG fake",
                 publisher=lambda image, caption: self.fail("ne doit pas publier"),
+                status_publisher=lambda image, caption: self.fail(
+                    "ne doit pas publier de statut"
+                ),
             )
 
             first = run_once(settings, **kwargs)
@@ -113,6 +121,149 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(result.status, "posted")
             self.assertEqual(sent, [("42", b"image", "Légende")])
             self.assertIn("1 destinataire", result.detail)
+            store.close()
+
+    def test_posts_whatsapp_status_alongside_telegram(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(tmp, dry_run=False)
+            store = Store(Path(tmp) / "bot.db")
+            statuses: list[tuple[bytes, str]] = []
+
+            def status_publisher(image: bytes, caption: str) -> dict:
+                statuses.append((image, caption))
+                return {"id": "STATUS1"}
+
+            result = run_once(
+                settings,
+                store=store,
+                update_fetcher=lambda offset: [],
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                publisher=lambda chat_id, image, caption: {"message_id": 7},
+                status_publisher=status_publisher,
+            )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(statuses, [(b"image", "Légende")])
+            self.assertIn("1 destinataire", result.detail)
+            self.assertIn("statut WhatsApp", result.detail)
+            store.close()
+
+    def test_whatsapp_status_can_be_the_only_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            statuses: list[tuple[bytes, str]] = []
+
+            def status_publisher(image: bytes, caption: str) -> dict:
+                statuses.append((image, caption))
+                return {"id": "STATUS1"}
+
+            result = run_once(
+                settings,
+                store=store,
+                update_fetcher=lambda offset: [],
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                publisher=lambda *args: self.fail("aucun destinataire Telegram"),
+                status_publisher=status_publisher,
+            )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(statuses, [(b"image", "Légende")])
+            self.assertIn("statut WhatsApp", result.detail)
+            store.close()
+
+    def test_uses_configured_openwa_client(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785/",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_STATUS_RECIPIENTS": "123@c.us",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            calls: dict = {}
+
+            class FakeClient:
+                def __init__(self, client, base_url, api_key, session_id, recipients):
+                    calls["init"] = (base_url, api_key, session_id, recipients)
+
+                def send_image_status(self, image: bytes, caption: str) -> dict:
+                    calls["sent"] = (image, caption)
+                    return {"id": "STATUS1"}
+
+            with patch("bot.pipeline.OpenWAClient", FakeClient):
+                result = run_once(
+                    settings,
+                    store=store,
+                    update_fetcher=lambda offset: [],
+                    news_fetcher=lambda: [SAFE_ITEM],
+                    template_fetcher=lambda: TEMPLATES,
+                    generator=lambda item, templates, recent: MemePlan(
+                        "drake", ("Avant", "Après"), "Légende"
+                    ),
+                    image_fetcher=lambda url: b"image",
+                    publisher=lambda *args: self.fail("aucun destinataire Telegram"),
+                )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(
+                calls["init"],
+                ("http://127.0.0.1:2785", "secret", "session-1", ("123@c.us",)),
+            )
+            self.assertEqual(calls["sent"], (b"image", "Légende"))
+            store.close()
+
+    def test_whatsapp_status_failure_keeps_telegram_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(tmp, dry_run=False)
+            store = Store(Path(tmp) / "bot.db")
+
+            def status_publisher(image: bytes, caption: str) -> dict:
+                raise RuntimeError("HTTP 409 : session not ready")
+
+            result = run_once(
+                settings,
+                store=store,
+                update_fetcher=lambda offset: [],
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                publisher=lambda chat_id, image, caption: {"message_id": 7},
+                status_publisher=status_publisher,
+            )
+
+            self.assertEqual(result.status, "posted")
+            self.assertIn("1 destinataire", result.detail)
+            self.assertNotIn("statut WhatsApp", result.detail)
             store.close()
 
     def test_broadcasts_to_each_subscriber(self) -> None:

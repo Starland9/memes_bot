@@ -1,4 +1,4 @@
-"""Orchestration: news -> meme plan -> image -> Telegram."""
+"""Orchestration: news -> meme plan -> image -> Telegram + WhatsApp status."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .config import ConfigError, Settings
 from .llm import DeepSeekClient, MemePlan
 from .memegen import build_image_url, fetch_image
 from .news import NewsItem, collect_news
+from .openwa import OpenWAClient
 from .safety import blocked_term
 from .store import Store
 from .subscribers import handle_updates
@@ -21,11 +22,14 @@ from .templates import Template, fetch_templates, select_templates
 
 logger = logging.getLogger(__name__)
 
+STATUS_TARGET = "whatsapp-status"
+
 NewsFetcher = Callable[[], list[NewsItem]]
 TemplateFetcher = Callable[[], list[Template]]
 Generator = Callable[[NewsItem, list[Template], tuple[str, ...]], MemePlan | None]
 ImageFetcher = Callable[[str], bytes]
 Publisher = Callable[[str, bytes, str], dict]
+StatusPublisher = Callable[[bytes, str], dict]
 UpdateFetcher = Callable[[int | None], list[dict]]
 Notifier = Callable[[str, str], object]
 
@@ -64,6 +68,7 @@ def run_once(
     generator: Generator | None = None,
     image_fetcher: ImageFetcher | None = None,
     publisher: Publisher | None = None,
+    status_publisher: StatusPublisher | None = None,
     update_fetcher: UpdateFetcher | None = None,
     notifier: Notifier | None = None,
 ) -> RunResult:
@@ -87,6 +92,7 @@ def run_once(
             image_fetcher = image_fetcher or (lambda url: fetch_image(client, url))
 
             recipients: tuple[str, ...] = ()
+            status_sender = status_publisher
             if not settings.dry_run:
                 telegram = TelegramClient(client, settings.telegram_bot_token)
                 publisher = publisher or telegram.send_photo
@@ -104,7 +110,15 @@ def run_once(
                     logger.warning("Mise à jour des abonnés impossible : %s", exc)
 
                 recipients = _recipients(settings, store)
-                if not recipients:
+                if status_sender is None and settings.openwa_configured:
+                    status_sender = OpenWAClient(
+                        client,
+                        settings.openwa_base_url,
+                        settings.openwa_api_key,
+                        settings.openwa_session_id,
+                        settings.openwa_status_recipients,
+                    ).send_image_status
+                if not recipients and status_sender is None:
                     return RunResult("nothing", "aucun abonné")
 
             items = news_fetcher()
@@ -189,7 +203,26 @@ def run_once(
                     )
                     logger.info("Publié pour %s (message %s)", chat_id, message_id)
 
-                if not message_ids:
+                status_posted = False
+                if status_sender is not None:
+                    try:
+                        status = status_sender(image, plan.caption)
+                    except Exception as exc:
+                        logger.warning("Publication du statut WhatsApp impossible : %s", exc)
+                        store.record_delivery(
+                            url_hash=digest, chat_id=STATUS_TARGET, error=str(exc)
+                        )
+                    else:
+                        status_id = str(status.get("id", ""))
+                        status_posted = True
+                        store.record_delivery(
+                            url_hash=digest,
+                            chat_id=STATUS_TARGET,
+                            message_id=status_id,
+                        )
+                        logger.info("Publié en statut WhatsApp (id %s)", status_id or "absent")
+
+                if not message_ids and not status_posted:
                     logger.error("Aucun envoi réussi pour : %s", item.title)
                     return RunResult("nothing", "aucun envoi réussi")
 
@@ -202,11 +235,16 @@ def run_once(
                     template_id=plan.template_id,
                     lines=plan.lines,
                     caption=plan.caption,
-                    message_id=message_ids[0],
+                    message_id=message_ids[0] if message_ids else None,
                 )
+                targets: list[str] = []
+                if message_ids:
+                    targets.append(f"{len(message_ids)} destinataire(s)")
+                if status_posted:
+                    targets.append("statut WhatsApp")
                 return RunResult(
                     "posted",
-                    f"{len(message_ids)} destinataire(s) ({plan.template_id}) — {item.title}",
+                    f"{' + '.join(targets)} ({plan.template_id}) — {item.title}",
                 )
 
             return RunResult("nothing", "toutes les actualités ont déjà été traitées")
