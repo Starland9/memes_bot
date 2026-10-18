@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "sqlite": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mcp-server-sqlite",
+        "--with",
+        "mcp<2",
+        "mcp-server-sqlite",
+        "--db-path",
+        "${workspaceFolder}/data/bot.db"
+      ]
+    }
+  }
+}
