@@ -6,7 +6,7 @@ import argparse
 import logging
 
 from .config import ConfigError, load_settings
-from .pipeline import run_once
+from .pipeline import poll_updates, run_once
 
 logger = logging.getLogger("bot")
 
@@ -21,6 +21,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="génère l'image sans publier (écrit dans DATA_DIR/out)",
     )
+    parser.add_argument(
+        "--poll-updates",
+        action="store_true",
+        help="relève les /start et /stop des abonnés puis quitte",
+    )
     parser.add_argument("--log-level", default="INFO", help="niveau de log (défaut : INFO)")
     args = parser.parse_args(argv)
 
@@ -34,6 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         logger.error("%s", exc)
         return 2
+
+    if args.poll_updates:
+        try:
+            result = poll_updates(settings)
+        except Exception:
+            logger.exception("Échec de la relève des abonnés")
+            return 2
+        logger.info("%s : %s", result.status, result.detail)
+        return 0
 
     if settings.dry_run:
         logger.info("Mode dry-run : aucune publication Telegram")

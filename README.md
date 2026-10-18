@@ -5,16 +5,15 @@ viennent de Google News (tech FR) et de Hacker News, le texte du meme est écrit
 par DeepSeek, l'image est produite par l'API [memegen](https://api.memegen.link).
 
 ```
-RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (PNG) ─► Telegram sendPhoto
+RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (PNG) ─► Telegram (abonnés + canal)
 ```
 
 ## Prérequis
 
 - Une clé API DeepSeek (`DEEPSEEK_API_KEY`).
-- Un bot Telegram créé avec [@BotFather](https://t.me/BotFather), ajouté comme
-  **administrateur** du canal (ou membre du groupe) où publier.
-- Le `chat_id` de la destination : `-100…` pour un canal, visible via
-  `https://api.telegram.org/bot<TOKEN>/getUpdates` après un message dans le chat.
+- Un bot Telegram créé avec [@BotFather](https://t.me/BotFather). Chaque abonné
+  lui envoie `/start` en privé ; il peut aussi être ajouté comme
+  **administrateur** d'un canal avec `TELEGRAM_CHAT_ID`.
 
 ## Variables d'environnement
 
@@ -22,13 +21,14 @@ RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (
 | --- | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | oui | — | clé API DeepSeek |
 | `TELEGRAM_BOT_TOKEN` | oui (hors dry-run) | — | token du bot |
-| `TELEGRAM_CHAT_ID` | oui (hors dry-run) | — | canal/groupe de destination |
+| `TELEGRAM_CHAT_ID` | non | — | destinataire supplémentaire (canal `-100…` ou groupe) |
 | `MEMEGEN_BASE_URL` | non | `https://api.memegen.link` | API memegen |
 | `DATA_DIR` | non | `./data` | base SQLite + images de dry-run (en Docker : `/data`, défini par l'image) |
 | `DRY_RUN` | non | `0` | `1` = génère sans publier |
 | `MAX_AGE_HOURS` | non | `8` | fraîcheur maximale des actus |
 | `MAX_NEWS_ITEMS` | non | `40` | taille du lot d'actus |
 | `DEEPSEEK_MODEL` | non | `deepseek-flash` | modèle utilisé |
+| `REQUEST_TIMEOUT` | non | `60` | délai HTTP max par requête (secondes) |
 
 Copie `.env.example` vers un fichier d'environnement de ton choix.
 
@@ -39,8 +39,9 @@ Ce dossier est un dépôt autonome : aucune dépendance au dépôt memegen paren
 ```bash
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 export DEEPSEEK_API_KEY=sk-...
-python -m bot --dry-run      # image écrite dans data/out/, aucune publication
-python -m bot                # publication réelle
+python -m bot --dry-run       # image écrite dans data/out/, aucune publication
+python -m bot --poll-updates  # relève les /start et /stop, puis quitte
+python -m bot                 # publication réelle à tous les abonnés
 ```
 
 Tests :
@@ -48,6 +49,22 @@ Tests :
 ```bash
 python -m unittest discover -s tests -t .
 ```
+
+## Abonnés Telegram
+
+Chaque personne qui envoie `/start` au bot en privé est enregistrée dans la base
+SQLite et reçoit chaque meme en message privé ; `/stop` (ou `/unsubscribe`) la
+désinscrit. Les commandes sont relevées avec `getUpdates` et l'offset est
+persisté, donc aucun update n'est perdu entre deux exécutions.
+
+- `python -m bot --poll-updates` traite uniquement les abonnements : programme-le
+  toutes les 5 minutes pour des inscriptions réactives.
+- `python -m bot --once` relève aussi les updates au début du cycle, puis publie
+  un meme à tous les abonnés.
+- Un bot ne peut écrire qu'aux personnes qui l'ont démarré : sans `/start`, pas
+  de message privé possible.
+- Si un abonné bloque le bot (HTTP 403), il est retiré automatiquement.
+- Si `TELEGRAM_CHAT_ID` est défini, le canal/groupe le reçoit aussi.
 
 ## Déploiement Dokploy
 
@@ -62,8 +79,9 @@ python -m unittest discover -s tests -t .
 4. Onglet **Volumes** : monte un volume Docker sur `/data` (la base SQLite évite
    de republier deux fois la même actu). Préfère un volume nommé : un bind mount
    doit être accessible en écriture par l'uid 1000 (`chown 1000:1000`).
-5. Onglet **Schedule Jobs** : type *Application*, cron `5 * * * *`, commande
-   `python -m bot --once`.
+5. Onglet **Schedule Jobs** :
+   - `*/5 * * * *` → `python -m bot --poll-updates` (inscriptions réactives) ;
+   - `5 * * * *` → `python -m bot --once` (publication horaire).
 6. Vérifie les logs du premier run en `DRY_RUN=1`, puis passe `DRY_RUN=0`.
 
 Le conteneur ne travaille pas de lui-même : son `CMD` est `sleep infinity` pour

@@ -1,4 +1,4 @@
-"""SQLite state: avoid posting the same news twice."""
+"""SQLite state: posts, subscribers, deliveries and the Telegram offset."""
 
 from __future__ import annotations
 
@@ -21,7 +21,32 @@ CREATE TABLE IF NOT EXISTS posts (
     error       TEXT,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS subscribers (
+    chat_id       TEXT PRIMARY KEY,
+    username      TEXT,
+    first_name     TEXT,
+    subscribed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    url_hash   TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    message_id TEXT,
+    error      TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (url_hash, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Store:
@@ -33,7 +58,7 @@ class Store:
                 f"DATA_DIR non inscriptible : {path.parent} ({exc})"
             ) from exc
         self._conn = sqlite3.connect(path)
-        self._conn.execute(SCHEMA)
+        self._conn.executescript(SCHEMA)
         self._conn.commit()
 
     def is_seen(self, url_hash: str) -> bool:
@@ -74,7 +99,7 @@ class Store:
                 message_id,
                 status,
                 error,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                _now(),
             ),
         )
         self._conn.commit()
@@ -90,6 +115,65 @@ class Store:
             (limit,),
         ).fetchall()
         return tuple(row[0] for row in rows)
+
+    def add_subscriber(
+        self,
+        chat_id: str,
+        username: str | None = None,
+        first_name: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO subscribers (chat_id, username, first_name, subscribed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name
+            """,
+            (chat_id, username, first_name, _now()),
+        )
+        self._conn.commit()
+
+    def remove_subscriber(self, chat_id: str) -> None:
+        self._conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+        self._conn.commit()
+
+    def subscribers(self) -> tuple[str, ...]:
+        rows = self._conn.execute(
+            "SELECT chat_id FROM subscribers ORDER BY subscribed_at"
+        ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def get_offset(self) -> int | None:
+        row = self._conn.execute(
+            "SELECT value FROM state WHERE key = 'telegram_offset'"
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def set_offset(self, offset: int) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO state (key, value) VALUES ('telegram_offset', ?)",
+            (str(offset),),
+        )
+        self._conn.commit()
+
+    def record_delivery(
+        self,
+        *,
+        url_hash: str,
+        chat_id: str,
+        message_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO deliveries
+                (url_hash, chat_id, message_id, error, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (url_hash, chat_id, message_id, error, _now()),
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()

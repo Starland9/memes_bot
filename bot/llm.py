@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 MAX_LINE_LENGTH = 45
 MAX_CAPTION_LENGTH = 200
+MAX_TOKENS = 4000
 
 SYSTEM_PROMPT = """Tu écris des memes francophones drôles et bienveillants pour une chaîne Telegram.
 Tu réponds UNIQUEMENT avec un objet JSON valide, sans texte autour et sans balises Markdown.
@@ -48,6 +49,10 @@ PLAN_SCHEMA = """{
 
 class GenerationError(RuntimeError):
     """The model did not return a usable meme plan."""
+
+
+class InvalidResponse(RuntimeError):
+    """The API returned content that is not usable JSON."""
 
 
 @dataclass(frozen=True)
@@ -131,12 +136,19 @@ class DeepSeekClient:
                 "messages": messages,
                 "response_format": {"type": "json_object"},
                 "temperature": 1.0,
-                "max_tokens": 500,
+                "max_tokens": MAX_TOKENS,
             },
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return _extract_json(content)
+        choice = (response.json().get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        try:
+            return _extract_json(content)
+        except json.JSONDecodeError as exc:
+            finish_reason = choice.get("finish_reason") or "inconnu"
+            raise InvalidResponse(
+                f"réponse vide ou non JSON (finish_reason={finish_reason})"
+            ) from exc
 
     def generate(
         self,
@@ -165,7 +177,13 @@ class DeepSeekClient:
         templates_by_id = {t.id: t for t in templates}
         last_error = "réponse illisible"
         for _ in range(2):
-            payload = self._chat(messages)
+            try:
+                payload = self._chat(messages)
+            except InvalidResponse as exc:
+                last_error = str(exc)
+                logger.warning("Plan invalide (%s), nouvelle tentative", last_error)
+                continue
+
             plan, error = parse_plan(payload, templates_by_id)
             if error is None:
                 return plan

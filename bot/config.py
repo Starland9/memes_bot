@@ -23,7 +23,7 @@ class Settings:
     dry_run: bool = False
     max_age_hours: float = 8.0
     max_news_items: int = 40
-    request_timeout: float = 30.0
+    request_timeout: float = 60.0
 
 
 def _env_bool(value: str | None, default: bool = False) -> bool:
@@ -41,12 +41,8 @@ def load_settings(
         dry_run = _env_bool(env.get("DRY_RUN"))
 
     missing = ["DEEPSEEK_API_KEY"] if not env.get("DEEPSEEK_API_KEY") else []
-    if not dry_run:
-        missing += [
-            key
-            for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
-            if not env.get(key)
-        ]
+    if not dry_run and not env.get("TELEGRAM_BOT_TOKEN"):
+        missing.append("TELEGRAM_BOT_TOKEN")
     if missing:
         raise ConfigError(
             "Variables d'environnement manquantes : " + ", ".join(missing)
@@ -63,5 +59,5 @@ def load_settings(
         dry_run=dry_run,
         max_age_hours=float(env.get("MAX_AGE_HOURS", "8")),
         max_news_items=int(env.get("MAX_NEWS_ITEMS", "40")),
-        request_timeout=float(env.get("REQUEST_TIMEOUT", "30")),
+        request_timeout=float(env.get("REQUEST_TIMEOUT", "60")),
     )
