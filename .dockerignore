@@ -1,0 +1,9 @@
+.dockerignore
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+.venv/
+data/
+.env
+tests/
