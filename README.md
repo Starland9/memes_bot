@@ -24,7 +24,7 @@ RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (
 | `TELEGRAM_BOT_TOKEN` | oui (hors dry-run) | — | token du bot |
 | `TELEGRAM_CHAT_ID` | oui (hors dry-run) | — | canal/groupe de destination |
 | `MEMEGEN_BASE_URL` | non | `https://api.memegen.link` | API memegen |
-| `DATA_DIR` | non | `./data` | base SQLite + images de dry-run |
+| `DATA_DIR` | non | `./data` | base SQLite + images de dry-run (en Docker : `/data`, défini par l'image) |
 | `DRY_RUN` | non | `0` | `1` = génère sans publier |
 | `MAX_AGE_HOURS` | non | `8` | fraîcheur maximale des actus |
 | `MAX_NEWS_ITEMS` | non | `40` | taille du lot d'actus |
@@ -56,16 +56,28 @@ python -m unittest discover -s tests -t .
 2. Build type **Dockerfile** : contexte = racine du dépôt, Dockerfile =
    `Dockerfile`.
 3. Onglet **Environment** : les variables du tableau ci-dessus, avec
-   `DRY_RUN=1` pour le premier déploiement.
-4. Onglet **Volumes** : monte un volume sur `/data` (la base SQLite évite de
-   republier deux fois la même actu).
-5. Onglet **Schedule Jobs** : cron `5 * * * *`, commande
+   `DRY_RUN=1` pour le premier déploiement. **Ne définis pas `DATA_DIR`** :
+   l'image fixe déjà `/data`, et une valeur relative (`./data`, reprise de
+   `.env.example`) échoue en `PermissionError` car `/app` appartient à root.
+4. Onglet **Volumes** : monte un volume Docker sur `/data` (la base SQLite évite
+   de republier deux fois la même actu). Préfère un volume nommé : un bind mount
+   doit être accessible en écriture par l'uid 1000 (`chown 1000:1000`).
+5. Onglet **Schedule Jobs** : type *Application*, cron `5 * * * *`, commande
    `python -m bot --once`.
 6. Vérifie les logs du premier run en `DRY_RUN=1`, puis passe `DRY_RUN=0`.
 
-Comme le bot est un one-shot, chaque exécution est indépendante : pas de
-processus long à surveiller, et un run peut être relancé à la main depuis
-Dokploy.
+Le conteneur ne travaille pas de lui-même : son `CMD` est `sleep infinity` pour
+rester disponible aux `docker exec` des Schedule Jobs. Chaque exécution est
+indépendante (un seul cycle, aucune boucle interne), donc un run peut être
+relancé à la main depuis Dokploy.
+
+Pour lancer un cycle ponctuel hors Dokploy :
+
+```bash
+docker run --rm -v memes-bot-data:/data \
+  -e DEEPSEEK_API_KEY=sk-... -e DRY_RUN=1 \
+  memes-bot python -m bot --once
+```
 
 ## Coûts
 

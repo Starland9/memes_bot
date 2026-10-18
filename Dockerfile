@@ -20,4 +20,6 @@ USER bot
 
 ENV DATA_DIR=/data
 
-CMD ["python", "-m", "bot", "--once"]
+# Dokploy schedule jobs use `docker exec`, so the container must stay alive.
+# Run a cycle manually with: docker run --rm memes-bot python -m bot --once
+CMD ["sleep", "infinity"]

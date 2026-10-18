@@ -29,11 +29,14 @@ Run:
 .venv/bin/python -m bot --log-level DEBUG
 ```
 
-Docker (build context = repo root; only `requirements.txt` and `bot/` are copied):
+Docker (build context = repo root; only `requirements.txt` and `bot/` are copied).
+The image `CMD` is `sleep infinity` so Dokploy Schedule Jobs can `docker exec` into it;
+pass the command explicitly for a one-off run:
 
 ```bash
 docker build -t memes-bot .
-docker run --rm -e DEEPSEEK_API_KEY=... -e DRY_RUN=1 -v "$PWD/data:/data" memes-bot
+docker run --rm -v memes-bot-data:/data -e DEEPSEEK_API_KEY=... -e DRY_RUN=1 \
+  memes-bot python -m bot --once
 ```
 
 ## Architecture
@@ -58,6 +61,7 @@ news.collect_news (RSS + HN) -> safety.blocked_term -> store dedupe
 - `config.load_settings(env=..., dry_run=...)` accepts an injected env mapping — tests never mutate `os.environ`. New settings must be added to the `Settings` dataclass, read in `load_settings`, and documented in both `.env.example` and the README table (defaults are duplicated in those three places).
 - `DEEPSEEK_API_KEY` is always required; `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are required only when not in dry-run mode.
 - Dry-run is resolved as `--dry-run` flag OR `DRY_RUN` env var. It only skips Telegram: news, memegen and DeepSeek calls still happen.
+- In the container the image sets `DATA_DIR=/data`; a relative value such as `./data` (copied from `.env.example`) overrides it and fails, because `/app` is owned by root while the process runs as uid 1000. `/data` must be a writable volume.
 
 ## State and dedupe
 

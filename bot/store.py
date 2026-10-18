@@ -26,7 +26,12 @@ CREATE TABLE IF NOT EXISTS posts (
 
 class Store:
     def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"DATA_DIR non inscriptible : {path.parent} ({exc})"
+            ) from exc
         self._conn = sqlite3.connect(path)
         self._conn.execute(SCHEMA)
         self._conn.commit()
