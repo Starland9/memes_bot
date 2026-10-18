@@ -66,6 +66,12 @@ persisté, donc aucun update n'est perdu entre deux exécutions.
 - Si un abonné bloque le bot (HTTP 403), il est retiré automatiquement.
 - Si `TELEGRAM_CHAT_ID` est défini, le canal/groupe le reçoit aussi.
 
+Délais normaux : la confirmation « Inscription enregistrée » part au prochain
+`--poll-updates` (≤ 5 min avec la planification recommandée). Le premier meme
+arrive au prochain `--once` (horaire, minute 5) et **seulement si `DRY_RUN=0`**.
+Un `/start` envoyé juste après le passage horaire attend donc jusqu'à l'heure
+suivante ; pour un test immédiat, lance `python -m bot --once` à la main.
+
 ## Déploiement Dokploy
 
 1. Pousse ce dépôt sur GitHub, puis dans Dokploy **Create Application** →
