@@ -1,4 +1,4 @@
-"""Publish memes to a WhatsApp status through an OpenWA gateway."""
+"""Publish memes to a WhatsApp status or channel through an OpenWA gateway."""
 
 from __future__ import annotations
 
@@ -106,6 +106,24 @@ class OpenWAClient:
 
         response = self._client.post(
             self._session_url("status/send-image"),
+            json=payload,
+            headers={"X-API-Key": self._api_key},
+        )
+        body = self._decode(response)
+        return body if isinstance(body, dict) else {}
+
+    def send_image_message(self, chat_id: str, image: bytes, caption: str) -> dict:
+        """Post an image to a chat, a group or a channel (`<id>@newsletter`)."""
+        payload: dict[str, object] = {
+            "chatId": chat_id,
+            "base64": base64.b64encode(image).decode("ascii"),
+            "mimetype": "image/png",
+        }
+        if caption:
+            payload["caption"] = caption[:MAX_CAPTION_LENGTH]
+
+        response = self._client.post(
+            self._session_url("messages/send-image"),
             json=payload,
             headers={"X-API-Key": self._api_key},
         )

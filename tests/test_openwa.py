@@ -67,6 +67,65 @@ class OpenWAClientTest(unittest.TestCase):
             with self.assertRaisesRegex(OpenWAError, "409.*session not ready"):
                 api.send_image_status(b"png-bytes", "Légende")
 
+    def test_posts_image_to_a_channel_with_chat_id(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["api_key"] = request.headers["X-API-Key"]
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(
+                201, json={"messageId": "CHANNEL1", "timestamp": 1706868000}
+            )
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            result = api.send_image_message(
+                "120363000000000000@newsletter", b"png-bytes", "Légende"
+            )
+
+        self.assertEqual(result["messageId"], "CHANNEL1")
+        self.assertEqual(
+            captured["url"],
+            "http://localhost:2785/api/sessions/session-1/messages/send-image",
+        )
+        self.assertEqual(captured["api_key"], "secret")
+        self.assertEqual(
+            captured["payload"],
+            {
+                "chatId": "120363000000000000@newsletter",
+                "base64": "cG5nLWJ5dGVz",
+                "mimetype": "image/png",
+                "caption": "Légende",
+            },
+        )
+
+    def test_channel_post_without_caption_omits_it(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(201, json={"messageId": "CHANNEL1"})
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            api.send_image_message("120363000000000000@newsletter", b"png-bytes", "")
+
+        self.assertNotIn("caption", captured["payload"])
+
+    def test_channel_post_reports_the_wwjs_refusal(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                501, json={"message": "Channel media is not supported"}
+            )
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            with self.assertRaisesRegex(OpenWAError, "501.*not supported"):
+                api.send_image_message(
+                    "120363000000000000@newsletter", b"png-bytes", "Légende"
+                )
+
     def test_pages_through_all_contacts(self) -> None:
         pages = {
             "0": [

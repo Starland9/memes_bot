@@ -1,3 +1,3 @@
-"""Memegen news bot: news -> meme via DeepSeek/memegen -> Telegram and WhatsApp status."""
+"""Memegen news bot: news -> meme via DeepSeek/memegen -> Telegram, WhatsApp status or channel."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

@@ -191,6 +191,170 @@ class PipelineTest(unittest.TestCase):
             self.assertIn("statut WhatsApp", result.detail)
             store.close()
 
+    def test_posts_the_meme_to_the_whatsapp_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "PUBLISH_TARGETS": "channel",
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_CHANNEL_ID": "120363000000000000@newsletter",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            posts: list[tuple[bytes, str]] = []
+
+            def channel_publisher(image: bytes, caption: str) -> dict:
+                posts.append((image, caption))
+                return {"messageId": "CHANNEL1"}
+
+            result = run_once(
+                settings,
+                store=store,
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                channel_publisher=channel_publisher,
+            )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(posts, [(b"image", "Légende")])
+            self.assertIn("chaîne WhatsApp", result.detail)
+            self.assertTrue(store.is_seen(url_hash(SAFE_ITEM.url)))
+            store.close()
+
+    def test_channel_failure_keeps_the_telegram_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "PUBLISH_TARGETS": "telegram,channel",
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_CHANNEL_ID": "120363000000000000",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+
+            def channel_publisher(image: bytes, caption: str) -> dict:
+                raise RuntimeError("HTTP 501 : media to a channel is not supported")
+
+            result = run_once(
+                settings,
+                store=store,
+                update_fetcher=lambda offset: [],
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                publisher=lambda chat_id, image, caption: {"message_id": 7},
+                channel_publisher=channel_publisher,
+            )
+
+            self.assertEqual(result.status, "posted")
+            self.assertIn("1 destinataire", result.detail)
+            self.assertNotIn("chaîne WhatsApp", result.detail)
+            store.close()
+
+    def test_channel_only_run_without_success_is_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "PUBLISH_TARGETS": "channel",
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_CHANNEL_ID": "120363000000000000",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+
+            def channel_publisher(image: bytes, caption: str) -> dict:
+                raise RuntimeError("HTTP 409 : session not ready")
+
+            result = run_once(
+                settings,
+                store=store,
+                news_fetcher=lambda: [SAFE_ITEM],
+                template_fetcher=lambda: TEMPLATES,
+                generator=lambda item, templates, recent: MemePlan(
+                    "drake", ("Avant", "Après"), "Légende"
+                ),
+                image_fetcher=lambda url: b"image",
+                channel_publisher=channel_publisher,
+            )
+
+            self.assertEqual(result.status, "nothing")
+            self.assertEqual(result.detail, "aucun envoi réussi")
+            self.assertFalse(store.is_seen(url_hash(SAFE_ITEM.url)))
+            store.close()
+
+    def test_uses_the_configured_openwa_channel_client(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "PUBLISH_TARGETS": "channel",
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785/",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_CHANNEL_ID": "120363000000000000@newsletter",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            calls: dict = {}
+
+            class FakeClient:
+                def __init__(self, client, base_url, api_key, session_id, recipients):
+                    calls["init"] = (base_url, api_key, session_id, recipients)
+
+                def send_image_message(
+                    self, chat_id: str, image: bytes, caption: str
+                ) -> dict:
+                    calls["sent"] = (chat_id, image, caption)
+                    return {"messageId": "CHANNEL1"}
+
+            with patch("bot.pipeline.OpenWAClient", FakeClient):
+                result = run_once(
+                    settings,
+                    store=store,
+                    news_fetcher=lambda: [SAFE_ITEM],
+                    template_fetcher=lambda: TEMPLATES,
+                    generator=lambda item, templates, recent: MemePlan(
+                        "drake", ("Avant", "Après"), "Légende"
+                    ),
+                    image_fetcher=lambda url: b"image",
+                )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(
+                calls["init"],
+                ("http://127.0.0.1:2785", "secret", "session-1", ()),
+            )
+            self.assertEqual(
+                calls["sent"],
+                ("120363000000000000@newsletter", b"image", "Légende"),
+            )
+            store.close()
+
     def test_uses_configured_openwa_client(self) -> None:
         from unittest.mock import patch
 

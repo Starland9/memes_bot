@@ -31,6 +31,8 @@ class Settings:
     openwa_status_use_contacts: bool = False
     openwa_status_chatted_only: bool = False
     openwa_status_chat_days: float = 0.0
+    openwa_channel_id: str = ""
+    publish_targets: tuple[str, ...] = ("telegram",)
 
     @property
     def openwa_configured(self) -> bool:
@@ -39,10 +41,52 @@ class Settings:
         )
 
 
+PUBLISH_TARGETS = ("telegram", "status", "channel")
+CHANNEL_ID_SUFFIX = "@newsletter"
+
+
 def _env_bool(value: str | None, default: bool = False) -> bool:
     if not value:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_targets(raw: str, openwa_ready: bool) -> tuple[str, ...]:
+    if not raw.strip():
+        # Historical behaviour: OpenWA configured implies a WhatsApp status post.
+        return ("telegram", "status") if openwa_ready else ("telegram",)
+
+    targets = tuple(
+        dict.fromkeys(part.strip().lower() for part in raw.split(",") if part.strip())
+    )
+    if not targets:
+        raise ConfigError("PUBLISH_TARGETS est vide")
+    unknown = [target for target in targets if target not in PUBLISH_TARGETS]
+    if unknown:
+        raise ConfigError(
+            "PUBLISH_TARGETS contient des cibles inconnues : "
+            + ", ".join(unknown)
+            + " (valeurs admises : "
+            + ", ".join(PUBLISH_TARGETS)
+            + ")"
+        )
+    return targets
+
+
+def _parse_channel_id(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    base = (
+        value[: -len(CHANNEL_ID_SUFFIX)]
+        if value.endswith(CHANNEL_ID_SUFFIX)
+        else value
+    )
+    if not (base.isascii() and base.isdigit()):
+        raise ConfigError(
+            f"OPENWA_CHANNEL_ID invalide : {value} (attendu : <id>@newsletter)"
+        )
+    return f"{base}{CHANNEL_ID_SUFFIX}"
 
 
 def load_settings(
@@ -52,14 +96,6 @@ def load_settings(
     env = dict(os.environ if env is None else env)
     if dry_run is None:
         dry_run = _env_bool(env.get("DRY_RUN"))
-
-    missing = ["DEEPSEEK_API_KEY"] if not env.get("DEEPSEEK_API_KEY") else []
-    if not dry_run and not env.get("TELEGRAM_BOT_TOKEN"):
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if missing:
-        raise ConfigError(
-            "Variables d'environnement manquantes : " + ", ".join(missing)
-        )
 
     openwa = {
         "OPENWA_BASE_URL": env.get("OPENWA_BASE_URL", "").strip(),
@@ -71,6 +107,35 @@ def load_settings(
         raise ConfigError(
             "Configuration OpenWA incomplète, variables manquantes : "
             + ", ".join(unset_openwa)
+        )
+    openwa_ready = not unset_openwa
+
+    targets = _parse_targets(env.get("PUBLISH_TARGETS", ""), openwa_ready)
+    channel_id = _parse_channel_id(env.get("OPENWA_CHANNEL_ID", ""))
+
+    if channel_id and not openwa_ready:
+        raise ConfigError(
+            "OPENWA_CHANNEL_ID nécessite OPENWA_BASE_URL, OPENWA_API_KEY "
+            "et OPENWA_SESSION_ID"
+        )
+    remote = [target for target in targets if target != "telegram"]
+    if remote and not openwa_ready:
+        raise ConfigError(
+            "PUBLISH_TARGETS="
+            + ",".join(remote)
+            + " nécessite OPENWA_BASE_URL, OPENWA_API_KEY et OPENWA_SESSION_ID"
+        )
+    if "channel" in targets and not channel_id:
+        raise ConfigError(
+            "OPENWA_CHANNEL_ID manquant pour publier sur une chaîne WhatsApp"
+        )
+
+    missing = ["DEEPSEEK_API_KEY"] if not env.get("DEEPSEEK_API_KEY") else []
+    if not dry_run and "telegram" in targets and not env.get("TELEGRAM_BOT_TOKEN"):
+        missing.append("TELEGRAM_BOT_TOKEN")
+    if missing:
+        raise ConfigError(
+            "Variables d'environnement manquantes : " + ", ".join(missing)
         )
 
     recipients = tuple(
@@ -107,4 +172,6 @@ def load_settings(
         openwa_status_use_contacts=use_contacts,
         openwa_status_chatted_only=chatted_only,
         openwa_status_chat_days=chat_days,
+        openwa_channel_id=channel_id,
+        publish_targets=targets,
     )

@@ -1,4 +1,4 @@
-"""Orchestration: news -> meme plan -> image -> Telegram + WhatsApp status."""
+"""Orchestration: news -> meme plan -> image -> Telegram, WhatsApp status or channel."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import Callable
 
 import httpx
@@ -24,6 +25,7 @@ from .templates import Template, fetch_templates, select_templates
 logger = logging.getLogger(__name__)
 
 STATUS_TARGET = "whatsapp-status"
+CHANNEL_TARGET = "whatsapp-channel"
 MAX_STATUS_RECIPIENTS = 256
 
 NewsFetcher = Callable[[], list[NewsItem]]
@@ -32,6 +34,7 @@ Generator = Callable[[NewsItem, list[Template], tuple[str, ...]], MemePlan | Non
 ImageFetcher = Callable[[str], bytes]
 Publisher = Callable[[str, bytes, str], dict]
 StatusPublisher = Callable[[bytes, str], dict]
+ChannelPublisher = Callable[[bytes, str], dict]
 UpdateFetcher = Callable[[int | None], list[dict]]
 Notifier = Callable[[str, str], object]
 ContactFetcher = Callable[[], list[dict]]
@@ -100,6 +103,7 @@ def run_once(
     image_fetcher: ImageFetcher | None = None,
     publisher: Publisher | None = None,
     status_publisher: StatusPublisher | None = None,
+    channel_publisher: ChannelPublisher | None = None,
     update_fetcher: UpdateFetcher | None = None,
     notifier: Notifier | None = None,
 ) -> RunResult:
@@ -122,34 +126,58 @@ def run_once(
             ).generate
             image_fetcher = image_fetcher or (lambda url: fetch_image(client, url))
 
+            active_targets = set(settings.publish_targets)
+            if status_publisher is not None:
+                active_targets.add("status")
+            if channel_publisher is not None:
+                active_targets.add("channel")
+
             recipients: tuple[str, ...] = ()
             status_sender = status_publisher
+            channel_sender = channel_publisher
             if not settings.dry_run:
-                telegram = TelegramClient(client, settings.telegram_bot_token)
-                publisher = publisher or telegram.send_photo
-                notifier = notifier or telegram.send_message
-                fetcher: UpdateFetcher = update_fetcher or telegram.get_updates
-                try:
-                    added, removed = handle_updates(
-                        fetcher(store.get_offset()), store, notifier
-                    )
-                    if added or removed:
-                        logger.info(
-                            "%d abonnement(s), %d désabonnement(s)", added, removed
+                if "telegram" in active_targets:
+                    telegram = TelegramClient(client, settings.telegram_bot_token)
+                    publisher = publisher or telegram.send_photo
+                    notifier = notifier or telegram.send_message
+                    fetcher: UpdateFetcher = update_fetcher or telegram.get_updates
+                    try:
+                        added, removed = handle_updates(
+                            fetcher(store.get_offset()), store, notifier
                         )
-                except Exception as exc:  # broadcast can proceed with known subscribers
-                    logger.warning("Mise à jour des abonnés impossible : %s", exc)
+                        if added or removed:
+                            logger.info(
+                                "%d abonnement(s), %d désabonnement(s)", added, removed
+                            )
+                    except Exception as exc:  # broadcast can proceed with known subscribers
+                        logger.warning("Mise à jour des abonnés impossible : %s", exc)
 
-                recipients = _recipients(settings, store)
-                if status_sender is None and settings.openwa_configured:
-                    status_sender = OpenWAClient(
+                    recipients = _recipients(settings, store)
+
+                needs_openwa = (
+                    "status" in active_targets and status_sender is None
+                ) or ("channel" in active_targets and channel_sender is None)
+                if needs_openwa and settings.openwa_configured:
+                    openwa = OpenWAClient(
                         client,
                         settings.openwa_base_url,
                         settings.openwa_api_key,
                         settings.openwa_session_id,
-                        _status_recipients(settings, store),
-                    ).send_image_status
-                if not recipients and status_sender is None:
+                        _status_recipients(settings, store)
+                        if "status" in active_targets
+                        else (),
+                    )
+                    if "status" in active_targets:
+                        status_sender = status_sender or openwa.send_image_status
+                    if "channel" in active_targets:
+                        channel_sender = channel_sender or partial(
+                            openwa.send_image_message, settings.openwa_channel_id
+                        )
+                if (
+                    not recipients
+                    and status_sender is None
+                    and channel_sender is None
+                ):
                     return RunResult("nothing", "aucun abonné")
 
             items = news_fetcher()
@@ -253,7 +281,35 @@ def run_once(
                         )
                         logger.info("Publié en statut WhatsApp (id %s)", status_id or "absent")
 
-                if not message_ids and not status_posted:
+                channel_posted = False
+                if channel_sender is not None:
+                    try:
+                        post = channel_sender(image, plan.caption)
+                    except Exception as exc:
+                        logger.warning(
+                            "Publication sur la chaîne WhatsApp impossible : %s", exc
+                        )
+                        if "501" in str(exc):
+                            logger.error(
+                                "L'engine whatsapp-web.js refuse les images vers une "
+                                "chaîne : passe la passerelle en ENGINE_TYPE=baileys."
+                            )
+                        store.record_delivery(
+                            url_hash=digest, chat_id=CHANNEL_TARGET, error=str(exc)
+                        )
+                    else:
+                        post_id = str(post.get("messageId", ""))
+                        channel_posted = True
+                        store.record_delivery(
+                            url_hash=digest,
+                            chat_id=CHANNEL_TARGET,
+                            message_id=post_id,
+                        )
+                        logger.info(
+                            "Publié sur la chaîne WhatsApp (id %s)", post_id or "absent"
+                        )
+
+                if not message_ids and not status_posted and not channel_posted:
                     logger.error("Aucun envoi réussi pour : %s", item.title)
                     return RunResult("nothing", "aucun envoi réussi")
 
@@ -268,14 +324,16 @@ def run_once(
                     caption=plan.caption,
                     message_id=message_ids[0] if message_ids else None,
                 )
-                targets: list[str] = []
+                parts: list[str] = []
                 if message_ids:
-                    targets.append(f"{len(message_ids)} destinataire(s)")
+                    parts.append(f"{len(message_ids)} destinataire(s)")
                 if status_posted:
-                    targets.append("statut WhatsApp")
+                    parts.append("statut WhatsApp")
+                if channel_posted:
+                    parts.append("chaîne WhatsApp")
                 return RunResult(
                     "posted",
-                    f"{' + '.join(targets)} ({plan.template_id}) — {item.title}",
+                    f"{' + '.join(parts)} ({plan.template_id}) — {item.title}",
                 )
 
             return RunResult("nothing", "toutes les actualités ont déjà été traitées")

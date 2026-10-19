@@ -48,5 +48,77 @@ class OpenWAConfigTest(unittest.TestCase):
         )
 
 
+OPENWA = {
+    "OPENWA_BASE_URL": "http://localhost:2785",
+    "OPENWA_API_KEY": "secret",
+    "OPENWA_SESSION_ID": "session-1",
+}
+
+
+class PublishTargetsConfigTest(unittest.TestCase):
+    def test_default_publishes_to_telegram_only(self) -> None:
+        self.assertEqual(_load().publish_targets, ("telegram",))
+
+    def test_default_adds_status_when_openwa_is_configured(self) -> None:
+        self.assertEqual(
+            _load(**OPENWA).publish_targets, ("telegram", "status")
+        )
+
+    def test_explicit_targets_replace_the_default(self) -> None:
+        settings = _load(
+            PUBLISH_TARGETS="Channel",
+            OPENWA_CHANNEL_ID="120363000000000000",
+            **OPENWA,
+        )
+        self.assertEqual(settings.publish_targets, ("channel",))
+
+    def test_rejects_unknown_targets(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "inconnues : mastodon"):
+            _load(PUBLISH_TARGETS="telegram,mastodon")
+
+    def test_channel_target_requires_a_channel_id(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "OPENWA_CHANNEL_ID manquant"):
+            _load(PUBLISH_TARGETS="channel", **OPENWA)
+
+    def test_channel_target_requires_openwa(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "OPENWA_BASE_URL.*OPENWA_SESSION_ID"):
+            _load(PUBLISH_TARGETS="channel", OPENWA_CHANNEL_ID="120363000000000000")
+
+    def test_normalizes_the_channel_id(self) -> None:
+        settings = _load(
+            PUBLISH_TARGETS="channel",
+            OPENWA_CHANNEL_ID="120363000000000000@newsletter",
+            **OPENWA,
+        )
+        self.assertEqual(
+            settings.openwa_channel_id, "120363000000000000@newsletter"
+        )
+
+        settings = _load(
+            PUBLISH_TARGETS="channel",
+            OPENWA_CHANNEL_ID=" 120363000000000000 ",
+            **OPENWA,
+        )
+        self.assertEqual(
+            settings.openwa_channel_id, "120363000000000000@newsletter"
+        )
+
+    def test_rejects_a_malformed_channel_id(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "OPENWA_CHANNEL_ID invalide"):
+            _load(OPENWA_CHANNEL_ID="memes@newsletter", **OPENWA)
+
+    def test_channel_only_target_needs_no_telegram_token(self) -> None:
+        env = {"DEEPSEEK_API_KEY": "key", "PUBLISH_TARGETS": "channel"}
+        env.update(OPENWA)
+        env["OPENWA_CHANNEL_ID"] = "120363000000000000@newsletter"
+        settings = load_settings(env=env, dry_run=False)
+        self.assertEqual(settings.publish_targets, ("channel",))
+
+    def test_telegram_stays_required_for_the_telegram_target(self) -> None:
+        env = {"DEEPSEEK_API_KEY": "key"}
+        with self.assertRaisesRegex(ConfigError, "TELEGRAM_BOT_TOKEN"):
+            load_settings(env=env, dry_run=False)
+
+
 if __name__ == "__main__":
     unittest.main()
