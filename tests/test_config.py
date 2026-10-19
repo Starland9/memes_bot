@@ -107,6 +107,26 @@ class PublishTargetsConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "OPENWA_CHANNEL_ID invalide"):
             _load(OPENWA_CHANNEL_ID="memes@newsletter", **OPENWA)
 
+    def test_invite_code_as_channel_id_points_at_the_resolver(self) -> None:
+        with self.assertRaisesRegex(
+            ConfigError, "un id de chaîne est numérique.*--resolve-channel"
+        ):
+            _load(OPENWA_CHANNEL_ID="0029VbDVUc3H5JM2MUNqmq0J", **OPENWA)
+
+    def test_helper_commands_tolerate_a_bad_channel_id(self) -> None:
+        settings = load_settings(
+            env={
+                "DEEPSEEK_API_KEY": "key",
+                "OPENWA_CHANNEL_ID": "0029VbDVUc3H5JM2MUNqmq0J",
+                "PUBLISH_TARGETS": "channel",
+                **OPENWA,
+            },
+            dry_run=True,
+            validate_publish=False,
+        )
+        self.assertEqual(settings.openwa_channel_id, "")
+        self.assertEqual(settings.openwa_base_url, "http://localhost:2785")
+
     def test_channel_only_target_needs_no_telegram_token(self) -> None:
         env = {"DEEPSEEK_API_KEY": "key", "PUBLISH_TARGETS": "channel"}
         env.update(OPENWA)

@@ -84,7 +84,10 @@ def _parse_channel_id(raw: str) -> str:
     )
     if not (base.isascii() and base.isdigit()):
         raise ConfigError(
-            f"OPENWA_CHANNEL_ID invalide : {value} (attendu : <id>@newsletter)"
+            f"OPENWA_CHANNEL_ID invalide : {value} — un id de chaîne est "
+            "numérique (ex. 120363000000000000@newsletter). Pour un lien de "
+            "partage ou un code d'invitation, lance "
+            "`python -m bot --resolve-channel <lien>`."
         )
     return f"{base}{CHANNEL_ID_SUFFIX}"
 
@@ -92,7 +95,15 @@ def _parse_channel_id(raw: str) -> str:
 def load_settings(
     env: dict[str, str] | None = None,
     dry_run: bool | None = None,
+    *,
+    validate_publish: bool = True,
 ) -> Settings:
+    """Read the environment.
+
+    `validate_publish=False` is for one-off commands (`--resolve-channel`,
+    `--sync-contacts`, `--poll-updates`): they must run even when the publishing
+    settings are missing or wrong, since one of them computes the channel id.
+    """
     env = dict(os.environ if env is None else env)
     if dry_run is None:
         dry_run = _env_bool(env.get("DRY_RUN"))
@@ -110,28 +121,43 @@ def load_settings(
         )
     openwa_ready = not unset_openwa
 
-    targets = _parse_targets(env.get("PUBLISH_TARGETS", ""), openwa_ready)
-    channel_id = _parse_channel_id(env.get("OPENWA_CHANNEL_ID", ""))
+    if validate_publish:
+        targets = _parse_targets(env.get("PUBLISH_TARGETS", ""), openwa_ready)
+        channel_id = _parse_channel_id(env.get("OPENWA_CHANNEL_ID", ""))
 
-    if channel_id and not openwa_ready:
-        raise ConfigError(
-            "OPENWA_CHANNEL_ID nécessite OPENWA_BASE_URL, OPENWA_API_KEY "
-            "et OPENWA_SESSION_ID"
-        )
-    remote = [target for target in targets if target != "telegram"]
-    if remote and not openwa_ready:
-        raise ConfigError(
-            "PUBLISH_TARGETS="
-            + ",".join(remote)
-            + " nécessite OPENWA_BASE_URL, OPENWA_API_KEY et OPENWA_SESSION_ID"
-        )
-    if "channel" in targets and not channel_id:
-        raise ConfigError(
-            "OPENWA_CHANNEL_ID manquant pour publier sur une chaîne WhatsApp"
-        )
+        if channel_id and not openwa_ready:
+            raise ConfigError(
+                "OPENWA_CHANNEL_ID nécessite OPENWA_BASE_URL, OPENWA_API_KEY "
+                "et OPENWA_SESSION_ID"
+            )
+        remote = [target for target in targets if target != "telegram"]
+        if remote and not openwa_ready:
+            raise ConfigError(
+                "PUBLISH_TARGETS="
+                + ",".join(remote)
+                + " nécessite OPENWA_BASE_URL, OPENWA_API_KEY et OPENWA_SESSION_ID"
+            )
+        if "channel" in targets and not channel_id:
+            raise ConfigError(
+                "OPENWA_CHANNEL_ID manquant pour publier sur une chaîne WhatsApp"
+            )
+    else:
+        try:
+            targets = _parse_targets(env.get("PUBLISH_TARGETS", ""), openwa_ready)
+        except ConfigError:
+            targets = ("telegram",)
+        try:
+            channel_id = _parse_channel_id(env.get("OPENWA_CHANNEL_ID", ""))
+        except ConfigError:
+            channel_id = ""
 
     missing = ["DEEPSEEK_API_KEY"] if not env.get("DEEPSEEK_API_KEY") else []
-    if not dry_run and "telegram" in targets and not env.get("TELEGRAM_BOT_TOKEN"):
+    if (
+        validate_publish
+        and not dry_run
+        and "telegram" in targets
+        and not env.get("TELEGRAM_BOT_TOKEN")
+    ):
         missing.append("TELEGRAM_BOT_TOKEN")
     if missing:
         raise ConfigError(

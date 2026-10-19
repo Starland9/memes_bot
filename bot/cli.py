@@ -57,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         settings = load_settings(
-            dry_run=True if not publishes else (args.dry_run or None)
+            dry_run=True if not publishes else (args.dry_run or None),
+            validate_publish=publishes,
         )
     except ConfigError as exc:
         logger.error("%s", exc)

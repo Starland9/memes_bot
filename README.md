@@ -210,6 +210,18 @@ propriétaire/administrateur pour poster). Si l'appel est refusé (`501` sur
 whatsapp-web.js, ou un refus de WhatsApp), la commande liste les chaînes déjà
 visibles dans `GET /chats` avec leur id, à récupérer à la main.
 
+Dans le conteneur (pas de `.venv`, les dépendances sont globales) :
+
+```bash
+docker exec <conteneur> python -m bot --resolve-channel "https://whatsapp.com/channel/0029..."
+```
+
+Remplis ensuite `OPENWA_CHANNEL_ID` avec l'id renvoyé, jamais avec le code du
+lien. Les commandes utilitaires (`--resolve-channel`, `--sync-contacts`,
+`--poll-updates`) ignorent `OPENWA_CHANNEL_ID` : un id erroné ne les bloque pas,
+alors qu'un cycle de publication échoue immédiatement avec un message qui
+rappelle la commande à lancer.
+
 Une fois l'id configuré, le bot poste l'image du meme avec sa légende :
 
 ```http
