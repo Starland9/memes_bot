@@ -212,10 +212,12 @@ class PipelineTest(unittest.TestCase):
                 },
             )
             store = Store(Path(tmp) / "bot.db")
-            posts: list[tuple[bytes, str]] = []
+            posts: list[tuple[bytes, str, str]] = []
 
-            def channel_publisher(image: bytes, caption: str) -> dict:
-                posts.append((image, caption))
+            def channel_publisher(
+                image: bytes, caption: str, image_url: str
+            ) -> dict:
+                posts.append((image, caption, image_url))
                 return {"messageId": "CHANNEL1"}
 
             result = run_once(
@@ -231,7 +233,14 @@ class PipelineTest(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "posted")
-            self.assertEqual(posts, [(b"image", "Légende")])
+            self.assertEqual(
+                posts,
+                [(
+                    b"image",
+                    "Légende",
+                    "https://api.memegen.link/images/drake/Avant/Apr%C3%A8s.png",
+                )],
+            )
             self.assertIn("chaîne WhatsApp", result.detail)
             self.assertTrue(store.is_seen(url_hash(SAFE_ITEM.url)))
             store.close()
@@ -251,7 +260,9 @@ class PipelineTest(unittest.TestCase):
             )
             store = Store(Path(tmp) / "bot.db")
 
-            def channel_publisher(image: bytes, caption: str) -> dict:
+            def channel_publisher(
+                image: bytes, caption: str, image_url: str
+            ) -> dict:
                 raise RuntimeError("HTTP 501 : media to a channel is not supported")
 
             result = run_once(
@@ -273,6 +284,59 @@ class PipelineTest(unittest.TestCase):
             self.assertNotIn("chaîne WhatsApp", result.detail)
             store.close()
 
+    def test_channel_link_mode_posts_text_instead_of_media(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "PUBLISH_TARGETS": "channel",
+                    "OPENWA_CHANNEL_MODE": "link",
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_CHANNEL_ID": "120363000000000000@newsletter",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            calls: dict = {}
+
+            class FakeClient:
+                def __init__(self, client, base_url, api_key, session_id, recipients):
+                    pass
+
+                def send_text_message(self, chat_id: str, text: str) -> dict:
+                    calls["text"] = (chat_id, text)
+                    return {"messageId": "CHANNEL1"}
+
+                def send_image_message(self, chat_id, image, caption) -> dict:
+                    raise AssertionError("le mode link ne doit pas envoyer de média")
+
+            with patch("bot.pipeline.OpenWAClient", FakeClient):
+                result = run_once(
+                    settings,
+                    store=store,
+                    news_fetcher=lambda: [SAFE_ITEM],
+                    template_fetcher=lambda: TEMPLATES,
+                    generator=lambda item, templates, recent: MemePlan(
+                        "drake", ("Avant", "Après"), "Légende"
+                    ),
+                    image_fetcher=lambda url: b"image",
+                )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(
+                calls["text"],
+                (
+                    "120363000000000000@newsletter",
+                    "Légende\nhttps://api.memegen.link/images/drake/Avant/Apr%C3%A8s.png",
+                ),
+            )
+            store.close()
+
     def test_channel_only_run_without_success_is_retried(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(
@@ -289,7 +353,9 @@ class PipelineTest(unittest.TestCase):
             )
             store = Store(Path(tmp) / "bot.db")
 
-            def channel_publisher(image: bytes, caption: str) -> dict:
+            def channel_publisher(
+                image: bytes, caption: str, image_url: str
+            ) -> dict:
                 raise RuntimeError("HTTP 409 : session not ready")
 
             result = run_once(

@@ -6,7 +6,6 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import partial
 from typing import Callable
 
 import httpx
@@ -34,7 +33,7 @@ Generator = Callable[[NewsItem, list[Template], tuple[str, ...]], MemePlan | Non
 ImageFetcher = Callable[[str], bytes]
 Publisher = Callable[[str, bytes, str], dict]
 StatusPublisher = Callable[[bytes, str], dict]
-ChannelPublisher = Callable[[bytes, str], dict]
+ChannelPublisher = Callable[[bytes, str, str], dict]
 ChannelResolver = Callable[[str], dict]
 UpdateFetcher = Callable[[int | None], list[dict]]
 Notifier = Callable[[str, str], object]
@@ -92,6 +91,28 @@ def _is_blocked(exc: Exception) -> bool:
         marker in text
         for marker in ("403", "blocked", "chat not found", "user is deactivated")
     )
+
+
+def _channel_link_text(caption: str, image_url: str) -> str:
+    return f"{caption}\n{image_url}" if caption else image_url
+
+
+def _channel_link_sender(
+    openwa: OpenWAClient, chat_id: str
+) -> ChannelPublisher:
+    def send(image: bytes, caption: str, image_url: str) -> dict:
+        return openwa.send_text_message(chat_id, _channel_link_text(caption, image_url))
+
+    return send
+
+
+def _channel_image_sender(
+    openwa: OpenWAClient, chat_id: str
+) -> ChannelPublisher:
+    def send(image: bytes, caption: str, image_url: str) -> dict:
+        return openwa.send_image_message(chat_id, image, caption)
+
+    return send
 
 
 def run_once(
@@ -171,8 +192,13 @@ def run_once(
                     if "status" in active_targets:
                         status_sender = status_sender or openwa.send_image_status
                     if "channel" in active_targets:
-                        channel_sender = channel_sender or partial(
-                            openwa.send_image_message, settings.openwa_channel_id
+                        factory = (
+                            _channel_link_sender
+                            if settings.openwa_channel_mode == "link"
+                            else _channel_image_sender
+                        )
+                        channel_sender = channel_sender or factory(
+                            openwa, settings.openwa_channel_id
                         )
                 if (
                     not recipients
@@ -285,7 +311,7 @@ def run_once(
                 channel_posted = False
                 if channel_sender is not None:
                     try:
-                        post = channel_sender(image, plan.caption)
+                        post = channel_sender(image, plan.caption, image_url)
                     except Exception as exc:
                         logger.warning(
                             "Publication sur la chaîne WhatsApp impossible : %s", exc
@@ -307,7 +333,10 @@ def run_once(
                             message_id=post_id,
                         )
                         logger.info(
-                            "Publié sur la chaîne WhatsApp (id %s)", post_id or "absent"
+                            "Publié sur la chaîne %s (id %s) — 201 = remis à la "
+                            "session, pas encore confirmé par WhatsApp",
+                            settings.openwa_channel_id,
+                            post_id or "absent",
                         )
 
                 if not message_ids and not status_posted and not channel_posted:

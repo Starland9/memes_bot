@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 MAX_CAPTION_LENGTH = 1024
+MAX_TEXT_LENGTH = 4096
 MAX_CONTACTS = 100_000
 CONTACTS_PAGE_SIZE = 1000
 CHANNEL_LINK_RE = re.compile(r"whatsapp\.com/channel/([A-Za-z0-9_-]+)")
@@ -134,6 +135,20 @@ class OpenWAClient:
         response = self._client.post(
             self._session_url("status/send-image"),
             json=payload,
+            headers={"X-API-Key": self._api_key},
+        )
+        body = self._decode(response)
+        return body if isinstance(body, dict) else {}
+
+    def send_text_message(self, chat_id: str, text: str) -> dict:
+        """Post a text message to a chat, a group or a channel.
+
+        Works on channels where media does not: Baileys still uploads newsletter media
+        through the regular media endpoints, so WhatsApp drops the image (ack error 479).
+        """
+        response = self._client.post(
+            self._session_url("messages/send-text"),
+            json={"chatId": chat_id, "text": text[:MAX_TEXT_LENGTH]},
             headers={"X-API-Key": self._api_key},
         )
         body = self._decode(response)

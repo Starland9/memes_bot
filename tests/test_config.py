@@ -113,6 +113,27 @@ class PublishTargetsConfigTest(unittest.TestCase):
         ):
             _load(OPENWA_CHANNEL_ID="0029VbDVUc3H5JM2MUNqmq0J", **OPENWA)
 
+    def test_channel_mode_defaults_to_image(self) -> None:
+        settings = _load(
+            PUBLISH_TARGETS="channel",
+            OPENWA_CHANNEL_ID="120363000000000000",
+            **OPENWA,
+        )
+        self.assertEqual(settings.openwa_channel_mode, "image")
+
+    def test_channel_mode_accepts_link(self) -> None:
+        settings = _load(
+            PUBLISH_TARGETS="channel",
+            OPENWA_CHANNEL_ID="120363000000000000",
+            OPENWA_CHANNEL_MODE="Link",
+            **OPENWA,
+        )
+        self.assertEqual(settings.openwa_channel_mode, "link")
+
+    def test_channel_mode_rejects_unknown_values(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "OPENWA_CHANNEL_MODE invalide"):
+            _load(OPENWA_CHANNEL_MODE="video", **OPENWA)
+
     def test_helper_commands_tolerate_a_bad_channel_id(self) -> None:
         settings = load_settings(
             env={

@@ -145,6 +145,32 @@ class OpenWAClientTest(unittest.TestCase):
 
         self.assertNotIn("caption", captured["payload"])
 
+    def test_posts_text_to_a_channel(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(201, json={"messageId": "CHANNEL1"})
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            api.send_text_message(
+                "120363000000000000@newsletter", "Légende\nhttps://example.com/x.png"
+            )
+
+        self.assertEqual(
+            captured["url"],
+            "http://localhost:2785/api/sessions/session-1/messages/send-text",
+        )
+        self.assertEqual(
+            captured["payload"],
+            {
+                "chatId": "120363000000000000@newsletter",
+                "text": "Légende\nhttps://example.com/x.png",
+            },
+        )
+
     def test_channel_post_reports_the_wwjs_refusal(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

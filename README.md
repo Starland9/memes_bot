@@ -44,6 +44,7 @@ RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (
 | `OPENWA_STATUS_CHATTED_ONLY` | non | `0` | `1` = seulement les contacts avec qui une discussion existe |
 | `OPENWA_STATUS_CHAT_DAYS` | non | `0` | ne garde que les discussions actives depuis N jours (`0` = pas de limite) |
 | `OPENWA_CHANNEL_ID` | non | — | chaîne de destination du meme (`<id>@newsletter`) |
+| `OPENWA_CHANNEL_MODE` | non | `image` | `image` = upload du PNG ; `link` = texte + lien memegen (repli quand Baileys n'affiche pas les médias) |
 | `PUBLISH_TARGETS` | non | `telegram` (+ `status` si OpenWA configuré) | cibles séparées par des virgules : `telegram`, `status`, `channel` |
 
 Le statut et la chaîne WhatsApp ne sont publiés que si les trois variables
@@ -190,6 +191,7 @@ OPENWA_BASE_URL=http://openwa:2785
 OPENWA_API_KEY=owa_k1_...
 OPENWA_SESSION_ID=00000000-0000-0000-0000-000000000000
 OPENWA_CHANNEL_ID=120363000000000000@newsletter
+OPENWA_CHANNEL_MODE=link
 PUBLISH_TARGETS=channel
 ```
 
@@ -237,12 +239,32 @@ X-API-Key: {OPENWA_API_KEY}
   défaut *whatsapp-web.js*, OpenWA refuse toute image vers un JID `@newsletter`
   par un `501` (whatsapp-web.js n'arrive plus à construire un média vers une
   chaîne) : le log l'explique et le meme n'est pas publié sur la chaîne.
+- **Bug Baileys : les médias postés sur une chaîne n'apparaissent pas.** L'upload
+  réussit (donc OpenWA répond `201`) mais WhatsApp dépose l'image sur le mauvais
+  CDN (`/o1/` au lieu de `/m1/`) et renvoie `ack error 479` : le média reste
+  invisible. Baileys 7.0.0-rc14, la version utilisée par OpenWA, n'a pas le
+  correctif (PR WhiskeySockets/Baileys#2434, encore ouverte ; issues #2199,
+  #2322, #2345, #2687). Le texte, lui, passe. D'où `OPENWA_CHANNEL_MODE` :
+  - `image` (défaut) — upload du PNG, correct une fois le correctif Baileys
+    disponible ;
+  - `link` — poste un message texte composé de la légende puis de l'URL du PNG
+    sur memegen. WhatsApp génère l'aperçu, rien n'est uploadé, donc le meme
+    s'affiche toujours. **C'est le mode à utiliser aujourd'hui.**
 - Le bot ne crée pas la chaîne. `POST /api/sessions/{id}/channels` existe, mais
   la création n'est pas idempotente (un échec peut laisser une chaîne orpheline)
   et exige une clé *operator* : crée la chaîne une fois, puis colle son id dans
   `OPENWA_CHANNEL_ID`.
 - `GET /channels` répond `501` sur Baileys : l'id est donc configuré à la main,
   jamais découvert par le bot.
+- Un `201` signifie que WhatsApp a **accepté le message dans la session**, pas
+  qu'il est visible sur la chaîne : Baileys n'attend pas l'accusé du serveur. Si
+  le meme n'apparaît pas, vérifie que le numéro de la session OpenWA est
+  **administrateur** de la chaîne (WhatsApp → infos de la chaîne →
+  Administrateurs) et que l'id configuré est bien le tien
+  (`GET /channels/{id}` doit renvoyer son nom). Le statut enregistré par le
+  gateway se lit avec
+  `GET /messages?chatId=<id>@newsletter&messageId=<id>` (`pending`, `sent` ou
+  `failed`).
 - La chaîne est une cible indépendante : un échec est loggé et enregistré dans
   `deliveries` sous la cible `whatsapp-channel`, sans annuler l'envoi Telegram ni
   le statut. Si aucune cible ne réussit, l'actu n'est pas enregistrée et sera

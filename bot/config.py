@@ -32,6 +32,7 @@ class Settings:
     openwa_status_chatted_only: bool = False
     openwa_status_chat_days: float = 0.0
     openwa_channel_id: str = ""
+    openwa_channel_mode: str = "image"
     publish_targets: tuple[str, ...] = ("telegram",)
 
     @property
@@ -42,6 +43,7 @@ class Settings:
 
 
 PUBLISH_TARGETS = ("telegram", "status", "channel")
+CHANNEL_MODES = ("image", "link")
 CHANNEL_ID_SUFFIX = "@newsletter"
 
 
@@ -151,6 +153,15 @@ def load_settings(
         except ConfigError:
             channel_id = ""
 
+    channel_mode = env.get("OPENWA_CHANNEL_MODE", "image").strip().lower() or "image"
+    if channel_mode not in CHANNEL_MODES:
+        if validate_publish:
+            raise ConfigError(
+                f"OPENWA_CHANNEL_MODE invalide : {channel_mode} "
+                "(valeurs admises : " + ", ".join(CHANNEL_MODES) + ")"
+            )
+        channel_mode = "image"
+
     missing = ["DEEPSEEK_API_KEY"] if not env.get("DEEPSEEK_API_KEY") else []
     if (
         validate_publish
@@ -199,5 +210,6 @@ def load_settings(
         openwa_status_chatted_only=chatted_only,
         openwa_status_chat_days=chat_days,
         openwa_channel_id=channel_id,
+        openwa_channel_mode=channel_mode,
         publish_targets=targets,
     )
