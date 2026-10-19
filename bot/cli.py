@@ -6,7 +6,7 @@ import argparse
 import logging
 
 from .config import ConfigError, load_settings
-from .pipeline import poll_updates, run_once, sync_contacts
+from .pipeline import poll_updates, resolve_channel, run_once, sync_contacts
 
 logger = logging.getLogger("bot")
 
@@ -35,6 +35,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="met en cache les contacts WhatsApp via OpenWA puis quitte",
     )
+    parser.add_argument(
+        "--resolve-channel",
+        metavar="LIEN",
+        help=(
+            "résout un lien de chaîne WhatsApp en OPENWA_CHANNEL_ID puis quitte "
+            "(ex. https://whatsapp.com/channel/0029...)"
+        ),
+    )
     parser.add_argument("--log-level", default="INFO", help="niveau de log (défaut : INFO)")
     args = parser.parse_args(argv)
 
@@ -43,8 +51,14 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # One-off helper commands never publish, so they must not require the Telegram token.
+    publishes = not (
+        args.sync_contacts or args.resolve_channel or args.poll_updates
+    )
     try:
-        settings = load_settings(dry_run=args.dry_run or None)
+        settings = load_settings(
+            dry_run=True if not publishes else (args.dry_run or None)
+        )
     except ConfigError as exc:
         logger.error("%s", exc)
         return 2
@@ -61,9 +75,24 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("%s : %s", result.status, result.detail)
         return 0
 
+    if args.resolve_channel:
+        try:
+            result = resolve_channel(settings, args.resolve_channel)
+        except ConfigError as exc:
+            logger.error("%s", exc)
+            return 2
+        except Exception:
+            logger.exception("Échec de la résolution de la chaîne")
+            return 2
+        logger.info("%s : %s", result.status, result.detail)
+        return 0 if result.status == "resolved" else 1
+
     if args.poll_updates:
         try:
             result = poll_updates(settings)
+        except ConfigError as exc:
+            logger.error("%s", exc)
+            return 2
         except Exception:
             logger.exception("Échec de la relève des abonnés")
             return 2

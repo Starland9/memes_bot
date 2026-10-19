@@ -15,7 +15,7 @@ from .config import ConfigError, Settings
 from .llm import DeepSeekClient, MemePlan
 from .memegen import build_image_url, fetch_image
 from .news import NewsItem, collect_news
-from .openwa import OpenWAClient
+from .openwa import OpenWAClient, OpenWAError, parse_channel_invite
 from .safety import blocked_term
 from .store import Store
 from .subscribers import handle_updates
@@ -35,6 +35,7 @@ ImageFetcher = Callable[[str], bytes]
 Publisher = Callable[[str, bytes, str], dict]
 StatusPublisher = Callable[[bytes, str], dict]
 ChannelPublisher = Callable[[bytes, str], dict]
+ChannelResolver = Callable[[str], dict]
 UpdateFetcher = Callable[[int | None], list[dict]]
 Notifier = Callable[[str, str], object]
 ContactFetcher = Callable[[], list[dict]]
@@ -402,6 +403,63 @@ def sync_contacts(
         finally:
             if owns_store:
                 store.close()
+
+
+def resolve_channel(
+    settings: Settings,
+    link: str,
+    *,
+    channel_resolver: ChannelResolver | None = None,
+    chat_fetcher: ContactFetcher | None = None,
+) -> RunResult:
+    """Turn a channel share link into the `@newsletter` id OPENWA_CHANNEL_ID expects."""
+    if not settings.openwa_configured:
+        raise ConfigError("Configuration OpenWA requise pour résoudre une chaîne")
+
+    invite = parse_channel_invite(link)
+
+    with httpx.Client(
+        timeout=settings.request_timeout,
+        headers={"User-Agent": "memegen-news-bot/0.1"},
+    ) as client:
+        openwa = OpenWAClient(
+            client,
+            settings.openwa_base_url,
+            settings.openwa_api_key,
+            settings.openwa_session_id,
+        )
+        try:
+            channel = (channel_resolver or openwa.subscribe_channel)(invite)
+        except Exception as exc:
+            logger.warning("Résolution du code d'invitation impossible : %s", exc)
+            known: list[str] = []
+            try:
+                chats = (chat_fetcher or openwa.list_chats)()
+            except Exception as chat_exc:  # a listing failure must not hide the real error
+                logger.warning("Liste des discussions indisponible : %s", chat_exc)
+            else:
+                known = [
+                    f"{chat.get('name') or '?'} <{chat.get('id')}>"
+                    for chat in chats
+                    if chat.get("kind") == "channel"
+                    or str(chat.get("id") or "").endswith("@newsletter")
+                ]
+            if not known:
+                raise
+            return RunResult(
+                "nothing",
+                "code non résolu ; chaînes connues : " + ", ".join(known),
+            )
+
+    channel_id = str(channel.get("id") or "")
+    if not channel_id.endswith("@newsletter"):
+        raise OpenWAError("réponse d'OpenWA sans id de chaîne")
+    logger.info("OPENWA_CHANNEL_ID=%s", channel_id)
+    name = str(channel.get("name") or "").strip()
+    return RunResult(
+        "resolved",
+        f"OPENWA_CHANNEL_ID={channel_id}" + (f" ({name})" if name else ""),
+    )
 
 
 def poll_updates(

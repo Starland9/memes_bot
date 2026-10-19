@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -11,6 +12,18 @@ import httpx
 MAX_CAPTION_LENGTH = 1024
 MAX_CONTACTS = 100_000
 CONTACTS_PAGE_SIZE = 1000
+CHANNEL_LINK_RE = re.compile(r"whatsapp\.com/channel/([A-Za-z0-9_-]+)")
+CHANNEL_INVITE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def parse_channel_invite(value: str) -> str:
+    """Extract the invite code from a WhatsApp channel share link."""
+    text = value.strip()
+    match = CHANNEL_LINK_RE.search(text)
+    code = match.group(1) if match else text
+    if not CHANNEL_INVITE_RE.fullmatch(code):
+        raise ValueError(f"lien de chaîne invalide : {value}")
+    return code
 
 
 class OpenWAError(RuntimeError):
@@ -91,6 +104,20 @@ class OpenWAClient:
     def list_chats(self, page_size: int = CONTACTS_PAGE_SIZE) -> list[dict]:
         """Fetch every active chat, most recent first (OpenWA's own ordering)."""
         return self._list_paged("chats", page_size, "des discussions")
+
+    def subscribe_channel(self, invite_code: str) -> dict:
+        """Resolve an invite code and return the channel, which carries its `@newsletter` id.
+
+        OpenWA implements this as a metadata lookup followed by a follow, so the session
+        ends up subscribed to the channel. It is the only route that resolves an invite.
+        """
+        response = self._client.post(
+            self._session_url("channels/subscribe"),
+            json={"inviteCode": invite_code},
+            headers={"X-API-Key": self._api_key},
+        )
+        body = self._decode(response)
+        return body if isinstance(body, dict) else {}
 
     def send_image_status(self, image: bytes, caption: str) -> dict:
         payload: dict[str, object] = {

@@ -88,6 +88,7 @@ export DEEPSEEK_API_KEY=sk-...
 python -m bot --dry-run       # image écrite dans data/out/, aucune publication
 python -m bot --poll-updates  # relève les /start et /stop, puis quitte
 python -m bot --sync-contacts # met en cache les contacts WhatsApp, puis quitte
+python -m bot --resolve-channel "https://whatsapp.com/channel/0029..."  # affiche l'id de la chaîne
 python -m bot                 # publication réelle à tous les abonnés
 ```
 
@@ -193,8 +194,23 @@ PUBLISH_TARGETS=channel
 ```
 
 L'id d'une chaîne se termine toujours par `@newsletter` ; un id numérique nu est
-accepté et complété automatiquement. Le bot poste alors l'image du meme avec sa
-légende :
+accepté et complété automatiquement. Pour l'obtenir depuis un lien de partage
+(`https://whatsapp.com/channel/<code>`), le bot sait le résoudre :
+
+```bash
+python -m bot --resolve-channel "https://whatsapp.com/channel/0029VbDVUc3H5JM2MUNqmq0J"
+# → resolved : OPENWA_CHANNEL_ID=120363000000000000@newsletter (Memes News)
+```
+
+`--resolve-channel` accepte aussi le code seul (`0029VbDVUc3H5JM2MUNqmq0J`). Il
+appelle `POST /api/sessions/{id}/channels/subscribe` : c'est la seule route
+OpenWA qui résout un code d'invitation, et elle **abonne la session** à la chaîne
+au passage (sans effet sur les droits de publication : il faut être
+propriétaire/administrateur pour poster). Si l'appel est refusé (`501` sur
+whatsapp-web.js, ou un refus de WhatsApp), la commande liste les chaînes déjà
+visibles dans `GET /chats` avec leur id, à récupérer à la main.
+
+Une fois l'id configuré, le bot poste l'image du meme avec sa légende :
 
 ```http
 POST {OPENWA_BASE_URL}/api/sessions/{OPENWA_SESSION_ID}/messages/send-image

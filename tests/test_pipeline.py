@@ -3,10 +3,16 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bot.config import load_settings
+from bot.config import ConfigError, load_settings
 from bot.llm import MemePlan
 from bot.news import NewsItem
-from bot.pipeline import poll_updates, run_once, sync_contacts, url_hash
+from bot.pipeline import (
+    poll_updates,
+    resolve_channel,
+    run_once,
+    sync_contacts,
+    url_hash,
+)
 from bot.store import Store
 from bot.telegram import TelegramError
 from bot.templates import Template
@@ -621,6 +627,84 @@ class PipelineTest(unittest.TestCase):
             self.assertIn("1 destinataire", result.detail)
             self.assertNotIn("statut WhatsApp", result.detail)
             store.close()
+
+    def test_resolves_a_channel_share_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                },
+            )
+            invites: list[str] = []
+
+            def resolver(invite: str) -> dict:
+                invites.append(invite)
+                return {
+                    "id": "120363000000000000@newsletter",
+                    "name": "Memes News",
+                }
+
+            result = resolve_channel(
+                settings,
+                "https://whatsapp.com/channel/0029VbDVUc3H5JM2MUNqmq0J",
+                channel_resolver=resolver,
+            )
+
+            self.assertEqual(result.status, "resolved")
+            self.assertEqual(invites, ["0029VbDVUc3H5JM2MUNqmq0J"])
+            self.assertEqual(
+                result.detail,
+                "OPENWA_CHANNEL_ID=120363000000000000@newsletter (Memes News)",
+            )
+
+    def test_lists_known_channels_when_the_invite_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                },
+            )
+
+            def resolver(invite: str) -> dict:
+                raise RuntimeError("HTTP 403 : engine refused")
+
+            def chat_fetcher() -> list[dict]:
+                return [
+                    {
+                        "id": "120363000000000000@newsletter",
+                        "kind": "channel",
+                        "name": "Memes News",
+                    },
+                    {"id": "111@c.us", "kind": "individual", "name": "Ada"},
+                    {"id": "222@g.us", "kind": "group", "name": "Équipe"},
+                ]
+
+            result = resolve_channel(
+                settings,
+                "0029VbDVUc3H5JM2MUNqmq0J",
+                channel_resolver=resolver,
+                chat_fetcher=chat_fetcher,
+            )
+
+            self.assertEqual(result.status, "nothing")
+            self.assertIn(
+                "Memes News <120363000000000000@newsletter>", result.detail
+            )
+            self.assertNotIn("Ada", result.detail)
+
+    def test_channel_resolution_requires_openwa(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(tmp)
+            with self.assertRaisesRegex(ConfigError, "Configuration OpenWA"):
+                resolve_channel(settings, "0029VbDVUc3H5JM2MUNqmq0J")
 
     def test_broadcasts_to_each_subscriber(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

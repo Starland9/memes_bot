@@ -3,7 +3,39 @@ import unittest
 
 import httpx
 
-from bot.openwa import OpenWAError, OpenWAClient
+from bot.openwa import (
+    OpenWAError,
+    OpenWAClient,
+    parse_channel_invite,
+)
+
+
+class ChannelInviteTest(unittest.TestCase):
+    def test_parses_a_share_link(self) -> None:
+        self.assertEqual(
+            parse_channel_invite(
+                "https://whatsapp.com/channel/0029VbDVUc3H5JM2MUNqmq0J"
+            ),
+            "0029VbDVUc3H5JM2MUNqmq0J",
+        )
+
+    def test_parses_a_link_with_a_query_string(self) -> None:
+        self.assertEqual(
+            parse_channel_invite(
+                "https://www.whatsapp.com/channel/0029VbDVUc3H5JM2MUNqmq0J?fbclid=abc"
+            ),
+            "0029VbDVUc3H5JM2MUNqmq0J",
+        )
+
+    def test_accepts_a_bare_code(self) -> None:
+        self.assertEqual(
+            parse_channel_invite(" 0029VbDVUc3H5JM2MUNqmq0J "),
+            "0029VbDVUc3H5JM2MUNqmq0J",
+        )
+
+    def test_rejects_anything_else(self) -> None:
+        with self.assertRaisesRegex(ValueError, "lien de chaîne invalide"):
+            parse_channel_invite("https://example.com/hello world")
 
 
 class OpenWAClientTest(unittest.TestCase):
@@ -125,6 +157,35 @@ class OpenWAClientTest(unittest.TestCase):
                 api.send_image_message(
                     "120363000000000000@newsletter", b"png-bytes", "Légende"
                 )
+
+    def test_subscribes_to_resolve_the_channel_id(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["api_key"] = request.headers["X-API-Key"]
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={
+                    "id": "120363000000000000@newsletter",
+                    "name": "Memes News",
+                },
+            )
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            channel = api.subscribe_channel("0029VbDVUc3H5JM2MUNqmq0J")
+
+        self.assertEqual(channel["id"], "120363000000000000@newsletter")
+        self.assertEqual(
+            captured["url"],
+            "http://localhost:2785/api/sessions/session-1/channels/subscribe",
+        )
+        self.assertEqual(captured["api_key"], "secret")
+        self.assertEqual(
+            captured["payload"], {"inviteCode": "0029VbDVUc3H5JM2MUNqmq0J"}
+        )
 
     def test_pages_through_all_contacts(self) -> None:
         pages = {
