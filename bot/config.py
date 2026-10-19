@@ -29,6 +29,8 @@ class Settings:
     openwa_session_id: str = ""
     openwa_status_recipients: tuple[str, ...] = ()
     openwa_status_use_contacts: bool = False
+    openwa_status_chatted_only: bool = False
+    openwa_status_chat_days: float = 0.0
 
     @property
     def openwa_configured(self) -> bool:
@@ -77,6 +79,15 @@ def load_settings(
         if jid.strip()
     )
 
+    chatted_only = _env_bool(env.get("OPENWA_STATUS_CHATTED_ONLY"))
+    chat_days = float(env.get("OPENWA_STATUS_CHAT_DAYS", "0"))
+    # Filtering on chats only makes sense on top of the cached address book.
+    use_contacts = (
+        _env_bool(env.get("OPENWA_STATUS_USE_CONTACTS"))
+        or chatted_only
+        or chat_days > 0
+    )
+
     return Settings(
         deepseek_api_key=env.get("DEEPSEEK_API_KEY", ""),
         memegen_base_url=env.get("MEMEGEN_BASE_URL", "https://api.memegen.link").rstrip("/"),
@@ -93,7 +104,7 @@ def load_settings(
         openwa_api_key=openwa["OPENWA_API_KEY"],
         openwa_session_id=openwa["OPENWA_SESSION_ID"],
         openwa_status_recipients=recipients,
-        openwa_status_use_contacts=_env_bool(
-            env.get("OPENWA_STATUS_USE_CONTACTS")
-        ),
+        openwa_status_use_contacts=use_contacts,
+        openwa_status_chatted_only=chatted_only,
+        openwa_status_chat_days=chat_days,
     )

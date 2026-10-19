@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 import httpx
@@ -56,11 +57,27 @@ def _recipients(settings: Settings, store: Store) -> tuple[str, ...]:
 def _status_recipients(settings: Settings, store: Store) -> tuple[str, ...]:
     targets = list(settings.openwa_status_recipients)
     if settings.openwa_status_use_contacts:
-        stored = store.whatsapp_contacts(limit=MAX_STATUS_RECIPIENTS)
-        if not stored:
-            logger.warning(
-                "Aucun contact WhatsApp en cache : lance `python -m bot --sync-contacts`"
+        since = None
+        if settings.openwa_status_chat_days > 0:
+            since = int(
+                datetime.now(timezone.utc).timestamp()
+                - settings.openwa_status_chat_days * 86400
             )
+        stored = store.whatsapp_contacts(
+            limit=MAX_STATUS_RECIPIENTS,
+            chatted_only=settings.openwa_status_chatted_only,
+            since=since,
+        )
+        if not stored:
+            if settings.openwa_status_chatted_only or settings.openwa_status_chat_days > 0:
+                logger.warning(
+                    "Aucun contact WhatsApp ne correspond au filtre de discussions : "
+                    "relance `python -m bot --sync-contacts`"
+                )
+            else:
+                logger.warning(
+                    "Aucun contact WhatsApp en cache : lance `python -m bot --sync-contacts`"
+                )
         targets.extend(stored)
     return tuple(dict.fromkeys(targets))[:MAX_STATUS_RECIPIENTS]
 
@@ -272,12 +289,17 @@ def sync_contacts(
     *,
     store: Store | None = None,
     contact_fetcher: ContactFetcher | None = None,
+    chat_fetcher: ContactFetcher | None = None,
 ) -> RunResult:
-    """Cache the OpenWA address book for use as WhatsApp status recipients."""
+    """Cache the OpenWA address book (and chats) for WhatsApp status recipients."""
     if not settings.openwa_configured:
         raise ConfigError(
             "Configuration OpenWA requise pour synchroniser les contacts"
         )
+
+    wants_chats = (
+        settings.openwa_status_chatted_only or settings.openwa_status_chat_days > 0
+    )
 
     owns_store = store is None
     with httpx.Client(
@@ -293,8 +315,27 @@ def sync_contacts(
                 settings.openwa_session_id,
             )
             contacts = (contact_fetcher or openwa.list_contacts)()
-            count = store.replace_whatsapp_contacts(contacts)
-            usable = store.whatsapp_contacts(limit=MAX_STATUS_RECIPIENTS)
+            chats: list[dict] = []
+            if wants_chats:
+                try:
+                    chats = (chat_fetcher or openwa.list_chats)()
+                except Exception as exc:  # the address book alone still refreshes the cache
+                    logger.warning(
+                        "Liste des discussions indisponible, filtre ignoré : %s", exc
+                    )
+
+            count = store.replace_whatsapp_contacts(contacts, chats)
+            since = None
+            if settings.openwa_status_chat_days > 0:
+                since = int(
+                    datetime.now(timezone.utc).timestamp()
+                    - settings.openwa_status_chat_days * 86400
+                )
+            usable = store.whatsapp_contacts(
+                limit=MAX_STATUS_RECIPIENTS,
+                chatted_only=settings.openwa_status_chatted_only,
+                since=since,
+            )
             return RunResult(
                 "synced",
                 f"{count} contact(s) WhatsApp, "

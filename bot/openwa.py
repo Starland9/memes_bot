@@ -50,37 +50,47 @@ class OpenWAClient:
             message = body.get("message") or body.get("error") or message
         raise OpenWAError(f"HTTP {response.status_code} : {message}")
 
-    def list_contacts(self, page_size: int = CONTACTS_PAGE_SIZE) -> list[dict]:
-        """Fetch every contact of the session, paging through the gateway."""
-        contacts: list[dict] = []
+    def _list_paged(
+        self, suffix: str, page_size: int, label: str
+    ) -> list[dict]:
+        """Fetch a paged OpenWA collection until the last short window."""
+        items: list[dict] = []
         seen: set[str] = set()
         offset = 0
         while offset < MAX_CONTACTS:
             response = self._client.get(
-                self._session_url("contacts"),
+                self._session_url(suffix),
                 params={"limit": page_size, "offset": offset},
                 headers={"X-API-Key": self._api_key},
             )
             body = self._decode(response)
             if not isinstance(body, list):
-                raise OpenWAError("réponse inattendue de la liste des contacts")
+                raise OpenWAError(f"réponse inattendue de la liste {label}")
 
             added = 0
-            for contact in body:
-                if not isinstance(contact, dict):
+            for item in body:
+                if not isinstance(item, dict):
                     continue
-                contact_id = contact.get("id")
-                if isinstance(contact_id, str) and contact_id:
-                    if contact_id in seen:
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id:
+                    if item_id in seen:
                         continue
-                    seen.add(contact_id)
-                contacts.append(contact)
+                    seen.add(item_id)
+                items.append(item)
                 added += 1
 
             if len(body) < page_size or added == 0:
                 break
             offset += len(body)
-        return contacts
+        return items
+
+    def list_contacts(self, page_size: int = CONTACTS_PAGE_SIZE) -> list[dict]:
+        """Fetch every contact of the session, paging through the gateway."""
+        return self._list_paged("contacts", page_size, "des contacts")
+
+    def list_chats(self, page_size: int = CONTACTS_PAGE_SIZE) -> list[dict]:
+        """Fetch every active chat, most recent first (OpenWA's own ordering)."""
+        return self._list_paged("chats", page_size, "des discussions")
 
     def send_image_status(self, image: bytes, caption: str) -> dict:
         payload: dict[str, object] = {

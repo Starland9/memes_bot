@@ -290,6 +290,58 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(calls["recipients"], ("999@c.us", "111@c.us"))
             store.close()
 
+    def test_status_recipients_respect_chatted_only(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                chat_id="",
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_STATUS_CHATTED_ONLY": "1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+            store.replace_whatsapp_contacts(
+                [
+                    {"id": "111@c.us", "isMyContact": True},
+                    {"id": "222@c.us", "isMyContact": True},
+                ],
+                chats=[
+                    {"id": "222@c.us", "kind": "individual", "timestamp": 123},
+                ],
+            )
+            calls: dict = {}
+
+            class FakeClient:
+                def __init__(self, client, base_url, api_key, session_id, recipients):
+                    calls["recipients"] = recipients
+
+                def send_image_status(self, image: bytes, caption: str) -> dict:
+                    return {"id": "STATUS1"}
+
+            with patch("bot.pipeline.OpenWAClient", FakeClient):
+                result = run_once(
+                    settings,
+                    store=store,
+                    update_fetcher=lambda offset: [],
+                    news_fetcher=lambda: [SAFE_ITEM],
+                    template_fetcher=lambda: TEMPLATES,
+                    generator=lambda item, templates, recent: MemePlan(
+                        "drake", ("Avant", "Après"), "Légende"
+                    ),
+                    image_fetcher=lambda url: b"image",
+                    publisher=lambda *args: self.fail("aucun destinataire Telegram"),
+                )
+
+            self.assertEqual(result.status, "posted")
+            self.assertEqual(calls["recipients"], ("222@c.us",))
+            store.close()
+
     def test_sync_contacts_stores_the_address_book(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = self._settings(
@@ -315,6 +367,68 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(result.status, "synced")
             self.assertIn("2 contact", result.detail)
             self.assertEqual(store.whatsapp_contacts(), ("111@c.us", "222@lid"))
+            store.close()
+
+    def test_sync_contacts_fetches_chats_when_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_STATUS_CHATTED_ONLY": "1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+
+            result = sync_contacts(
+                settings,
+                store=store,
+                contact_fetcher=lambda: [
+                    {"id": "111@c.us", "name": "Ada", "isMyContact": True},
+                    {"id": "222@c.us", "name": "Zoé", "isMyContact": True},
+                ],
+                chat_fetcher=lambda: [
+                    {"id": "222@c.us", "kind": "individual", "timestamp": 1700000000},
+                ],
+            )
+
+            self.assertEqual(result.status, "synced")
+            self.assertIn("1 destinataire", result.detail)
+            self.assertEqual(store.whatsapp_contacts(chatted_only=True), ("222@c.us",))
+            store.close()
+
+    def test_sync_contacts_tolerates_a_failing_chat_listing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self._settings(
+                tmp,
+                dry_run=False,
+                env_extra={
+                    "OPENWA_BASE_URL": "http://127.0.0.1:2785",
+                    "OPENWA_API_KEY": "secret",
+                    "OPENWA_SESSION_ID": "session-1",
+                    "OPENWA_STATUS_CHATTED_ONLY": "1",
+                },
+            )
+            store = Store(Path(tmp) / "bot.db")
+
+            def failing_chats():
+                raise RuntimeError("HTTP 409 : session not ready")
+
+            result = sync_contacts(
+                settings,
+                store=store,
+                contact_fetcher=lambda: [
+                    {"id": "111@c.us", "name": "Ada", "isMyContact": True},
+                ],
+                chat_fetcher=failing_chats,
+            )
+
+            self.assertEqual(result.status, "synced")
+            self.assertIn("0 destinataire", result.detail)
+            self.assertEqual(store.whatsapp_contacts(), ("111@c.us",))
             store.close()
 
     def test_whatsapp_status_failure_keeps_telegram_delivery(self) -> None:

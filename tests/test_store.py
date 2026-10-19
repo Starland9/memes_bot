@@ -56,6 +56,50 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(store.whatsapp_contacts(), ("555@c.us",))
             store.close()
 
+    def test_filters_on_chatted_contacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot.db")
+            store.replace_whatsapp_contacts(
+                [
+                    {"id": "111@c.us", "name": "Ada", "isMyContact": True},
+                    {"id": "222@c.us", "name": "Zoé", "isMyContact": True},
+                    {"id": "333@c.us", "name": "Jamais écrit", "isMyContact": True},
+                ],
+                chats=[
+                    {"id": "111@c.us", "kind": "individual", "timestamp": 1000},
+                    {"id": "222@c.us", "kind": "individual", "timestamp": 5000},
+                    {"id": "444@g.us", "kind": "group", "timestamp": 9000},
+                ],
+            )
+
+            self.assertEqual(
+                store.whatsapp_contacts(chatted_only=True),
+                ("222@c.us", "111@c.us"),
+            )
+            self.assertEqual(
+                store.whatsapp_contacts(chatted_only=True, since=2000),
+                ("222@c.us",),
+            )
+            self.assertEqual(
+                store.whatsapp_contacts(chatted_only=True, since=6000), ()
+            )
+            store.close()
+
+    def test_ignores_group_chats_even_without_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "bot.db")
+            store.replace_whatsapp_contacts(
+                [{"id": "111@c.us", "isMyContact": True}],
+                chats=[
+                    {"id": "111@c.us", "isGroup": False, "timestamp": 10},
+                    {"id": "222@c.us", "isGroup": True, "timestamp": 20},
+                ],
+            )
+            self.assertEqual(
+                store.whatsapp_contacts(chatted_only=True), ("111@c.us",)
+            )
+            store.close()
+
     def test_survives_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bot.db"

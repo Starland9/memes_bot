@@ -95,6 +95,27 @@ class OpenWAClientTest(unittest.TestCase):
         ])
         self.assertEqual(seen_offsets, ["0", "2"])
 
+    def test_pages_through_all_chats(self) -> None:
+        seen_offsets: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/sessions/session-1/chats")
+            offset = request.url.params["offset"]
+            seen_offsets.append(offset)
+            page = (
+                [{"id": "111@c.us", "kind": "individual", "timestamp": 10}]
+                if offset == "0"
+                else []
+            )
+            return httpx.Response(200, json=page)
+
+        with self._client(handler) as client:
+            api = OpenWAClient(client, "http://localhost:2785", "secret", "session-1")
+            chats = api.list_chats(page_size=1)
+
+        self.assertEqual([chat["id"] for chat in chats], ["111@c.us"])
+        self.assertEqual(seen_offsets, ["0", "1"])
+
     def test_quotes_session_id_in_path(self) -> None:
         captured: dict = {}
 

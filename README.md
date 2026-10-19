@@ -39,6 +39,8 @@ RSS + HN ─► filtre sécurité/dédup ─► DeepSeek (JSON) ─► memegen (
 | `OPENWA_SESSION_ID` | non | — | UUID de la session WhatsApp connectée |
 | `OPENWA_STATUS_RECIPIENTS` | non | — | JIDs destinataires manuels, séparés par des virgules (`123@c.us`) |
 | `OPENWA_STATUS_USE_CONTACTS` | non | `0` | `1` = ajoute les contacts synchronisés comme destinataires du statut |
+| `OPENWA_STATUS_CHATTED_ONLY` | non | `0` | `1` = seulement les contacts avec qui une discussion existe |
+| `OPENWA_STATUS_CHAT_DAYS` | non | `0` | ne garde que les discussions actives depuis N jours (`0` = pas de limite) |
 
 Le statut WhatsApp n'est publié que si les trois variables `OPENWA_*`
 (`BASE_URL`, `API_KEY`, `SESSION_ID`) sont définies. Une configuration partielle
@@ -48,6 +50,13 @@ Les destinataires du statut sont la concaténation de `OPENWA_STATUS_RECIPIENTS`
 (manuel) et, si `OPENWA_STATUS_USE_CONTACTS=1`, des contacts du carnet d'adresses
 mis en cache par `--sync-contacts` (hors contacts bloqués). Les doublons sont
 retirés et la liste est plafonnée à **256 JIDs**, la limite d'OpenWA.
+
+`OPENWA_STATUS_CHATTED_ONLY=1` restreint le cache aux contacts avec qui une
+discussion individuelle existe, et `OPENWA_STATUS_CHAT_DAYS=N` ne garde que les
+discussions actives depuis N jours. Ces deux filtres impliquent
+`OPENWA_STATUS_USE_CONTACTS=1`. Quand `CHATTED_ONLY` est actif, les destinataires
+sont triés du contact le plus récemment contacté au plus ancien, donc le plafond
+de 256 garde les conversations les plus fraîches.
 
 Avec l'engine **Baileys**, au moins une source de destinataires est obligatoire :
 OpenWA publie le statut uniquement pour cette liste. Avec **whatsapp-web.js**,
@@ -118,18 +127,30 @@ en cache le carnet d'adresses OpenWA :
 
 ```bash
 OPENWA_STATUS_USE_CONTACTS=1 python -m bot --sync-contacts
+# ou, pour ne cibler que les gens avec qui tu discutes :
+OPENWA_STATUS_CHATTED_ONLY=1 python -m bot --sync-contacts
 ```
 
 - `GET /api/sessions/{id}/contacts` est paginé (1000 contacts par page) et les
   JIDs invalides (groupes, ids vides) sont ignorés.
 - Seuls les JIDs `@c.us` / `@lid`, non bloqués et présents dans le carnet
   d'adresses (`isMyContact`) sont utilisés comme destinataires.
+- Avec `OPENWA_STATUS_CHATTED_ONLY=1`, `GET /api/sessions/{id}/chats` est aussi
+  lu (paginé) : seules les discussions `individual` comptent, les groupes,
+  canaux et statuts sont écartés. La date de dernière activité de chaque
+  discussion est stockée dans `whatsapp_contacts.last_chat_at`.
+- `OPENWA_STATUS_CHAT_DAYS=N` restreint en plus aux discussions vues depuis N
+  jours (utile pour ignorer les vieux fils de discussion).
+- Si l'appel `/chats` échoue (session non `ready`, timeout), un avertissement est
+  loggé et le carnet d'adresses est quand même rafraîchi : le filtre est ignoré
+  pour ce cycle plutôt que de bloquer le sync.
 - Le snapshot remplace le précédent dans la table SQLite `whatsapp_contacts` :
   un contact supprimé côté WhatsApp disparaît au sync suivant.
 - Aucun appel OpenWA supplémentaire n'est fait à la publication : le statut lit
   le cache local.
-- Le statut accepte au maximum 256 destinataires ; le cache peut en contenir plus,
-  les 256 premiers (carnet d'adresses, ordre alphabétique) sont envoyés.
+- Le statut accepte au maximum 256 destinataires ; le cache peut en contenir plus.
+  Sans `CHATTED_ONLY`, les 256 premiers du carnet (ordre alphabétique) partent ;
+  avec, les 256 conversations les plus récentes.
 - Si le cache est vide, un avertissement est loggé et, sur Baileys, le statut
   échouera faute de destinataires.
 

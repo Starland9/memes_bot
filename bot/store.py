@@ -54,9 +54,15 @@ CREATE TABLE IF NOT EXISTS whatsapp_contacts (
     push_name     TEXT,
     is_my_contact INTEGER NOT NULL DEFAULT 0,
     is_blocked    INTEGER NOT NULL DEFAULT 0,
+    last_chat_at  INTEGER,
     synced_at     TEXT NOT NULL
 );
 """
+
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    # (table, column, definition) — added after the fact on already-created databases.
+    ("whatsapp_contacts", "last_chat_at", "INTEGER"),
+)
 
 
 def _now() -> str:
@@ -70,6 +76,17 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _is_group_chat(chat: Mapping[str, object]) -> bool:
+    """Groups, channels and broadcasts are not status recipients."""
+    kind = chat.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind != "individual"
+    if chat.get("isGroup"):
+        return True
+    chat_id = str(chat.get("id") or "")
+    return not CONTACT_ID_RE.fullmatch(chat_id)
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         try:
@@ -80,7 +97,19 @@ class Store:
             ) from exc
         self._conn = sqlite3.connect(path)
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        for table, column, definition in MIGRATIONS:
+            existing = {
+                row[1]
+                for row in self._conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
 
     def is_seen(self, url_hash: str) -> bool:
         row = self._conn.execute(
@@ -166,9 +195,28 @@ class Store:
         return tuple(row[0] for row in rows)
 
     def replace_whatsapp_contacts(
-        self, contacts: Iterable[Mapping[str, object]]
+        self,
+        contacts: Iterable[Mapping[str, object]],
+        chats: Iterable[Mapping[str, object]] = (),
     ) -> int:
-        """Replace the cached OpenWA address book with a fresh snapshot."""
+        """Replace the cached OpenWA address book with a fresh snapshot.
+
+        ``chats`` carries the per-chat last-activity timestamp, which is what
+        lets the status target only people the account actually talks to.
+        """
+        last_chats: dict[str, int] = {}
+        for chat in chats:
+            if _is_group_chat(chat):
+                continue
+            chat_id = str(chat.get("id") or "").strip()
+            if not CONTACT_ID_RE.fullmatch(chat_id):
+                continue
+            try:
+                timestamp = int(chat.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                timestamp = 0
+            last_chats[chat_id] = max(timestamp, last_chats.get(chat_id, 0))
+
         rows: dict[str, tuple] = {}
         synced_at = _now()
         for contact in contacts:
@@ -182,6 +230,7 @@ class Store:
                 _optional_text(contact.get("pushName")),
                 1 if contact.get("isMyContact") else 0,
                 1 if contact.get("isBlocked") else 0,
+                last_chats.get(contact_id),
                 synced_at,
             )
 
@@ -191,26 +240,47 @@ class Store:
                 """
                 INSERT INTO whatsapp_contacts
                     (contact_id, number, name, push_name, is_my_contact,
-                     is_blocked, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     is_blocked, last_chat_at, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows.values(),
             )
         return len(rows)
 
     def whatsapp_contacts(
-        self, limit: int = 256, *, saved_only: bool = True
+        self,
+        limit: int = 256,
+        *,
+        saved_only: bool = True,
+        chatted_only: bool = False,
+        since: int | None = None,
     ) -> tuple[str, ...]:
-        """Cached JIDs usable as WhatsApp status recipients."""
+        """Cached JIDs usable as WhatsApp status recipients.
+
+        ``chatted_only`` keeps only ids that appear in an individual chat;
+        ``since`` drops chats older than that unix timestamp.
+        """
         query = "SELECT contact_id FROM whatsapp_contacts WHERE is_blocked = 0"
         if saved_only:
             query += " AND is_my_contact = 1"
-        query += (
-            " ORDER BY is_my_contact DESC,"
-            " COALESCE(name, push_name, contact_id) COLLATE NOCASE, contact_id"
-            " LIMIT ?"
-        )
-        rows = self._conn.execute(query, (limit,)).fetchall()
+        if chatted_only or since is not None:
+            query += " AND last_chat_at IS NOT NULL"
+        if since is not None:
+            query += " AND last_chat_at >= ?"
+        if chatted_only:
+            query += (
+                " ORDER BY last_chat_at DESC,"
+                " COALESCE(name, push_name, contact_id) COLLATE NOCASE, contact_id"
+            )
+        else:
+            query += (
+                " ORDER BY is_my_contact DESC,"
+                " COALESCE(name, push_name, contact_id) COLLATE NOCASE, contact_id"
+            )
+        query += " LIMIT ?"
+
+        params: tuple[object, ...] = (limit,) if since is None else (since, limit)
+        rows = self._conn.execute(query, params).fetchall()
         return tuple(row[0] for row in rows)
 
     def get_offset(self) -> int | None:

@@ -24,6 +24,16 @@ class OpenWAConfigTest(unittest.TestCase):
         settings = _load(OPENWA_STATUS_USE_CONTACTS="true")
         self.assertTrue(settings.openwa_status_use_contacts)
 
+    def test_chat_filters_imply_use_contacts(self) -> None:
+        settings = _load(OPENWA_STATUS_CHATTED_ONLY="1")
+        self.assertTrue(settings.openwa_status_use_contacts)
+        self.assertTrue(settings.openwa_status_chatted_only)
+
+        settings = _load(OPENWA_STATUS_CHAT_DAYS="30")
+        self.assertTrue(settings.openwa_status_use_contacts)
+        self.assertFalse(settings.openwa_status_chatted_only)
+        self.assertEqual(settings.openwa_status_chat_days, 30)
+
     def test_parses_recipients_and_trims_base_url(self) -> None:
         settings = _load(
             OPENWA_BASE_URL="http://localhost:2785/",
